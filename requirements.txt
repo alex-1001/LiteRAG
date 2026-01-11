@@ -1,0 +1,19 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+hnswlib
+numpy
+python-dotenv
+tiktoken
+
+# LLM API client (OpenRouter uses OpenAI-compatible API)
+openai
+
+# Embedding models (local)
+sentence-transformers
+
+# Testing (consider moving to requirements-dev.txt)
+pytest
+
+# TODO: create a requirements-dev.txt file for development dependencies
+# TODO: pin versions of dependencies
