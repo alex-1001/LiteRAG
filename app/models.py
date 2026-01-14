@@ -11,7 +11,7 @@ class DocumentChunk(BaseModel):
     """
     document_id: UUID = Field(..., description="Unique, stable identifier of document that a chunk originates from.")
     document_name: str = Field(..., description="Human-readable name of document.")
-    chunk_id: int = Field(..., description="Unique identifier for a chunk within its document.", ge=0)
+    chunk_id: str = Field(..., description="Unique identifier for a chunk within its document.")
     text: str = Field(..., description="Raw text from document, used for retrieval and augmentation.", min_length=1)
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional information about the chunk.")
     created_at: Optional[datetime] = Field(default_factory=lambda: datetime.now(timezone.utc), description="Timestamp when chunk was created.")
@@ -22,7 +22,7 @@ class Source(BaseModel):
     """
     document_name: str = Field(..., description="Human-readable name of document.")
     document_id: UUID = Field(..., description="Unique, stable identifier of document that a chunk originates from.")
-    chunk_id: int = Field(..., description="Unique identifier for a chunk within its document.", ge=0)
+    chunk_id: str = Field(..., description="Unique identifier for a chunk within its document.")
     snippet: str = Field(..., description="An excerpt of the chunk.", min_length=1)
     score: float = Field(..., description="Similarity score between the query and the chunk.", ge=0.0, le=1.0)
     
