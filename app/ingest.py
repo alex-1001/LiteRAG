@@ -26,12 +26,13 @@ def _validate_data_dir(data_dir: str) -> Path:
 def normalize_whitespace(text: str) -> str:
     """
     Normalize whitespaces in a text string. 
-    - convert special white space characters (e.g. "\r\n" or "\r") to "\n"
+    - convert special white space characters (e.g. "\\r\\n" or "\\r") to "\\n"
     - within text, remove white space at end of each line (trailing whitespace)
     - at text-level, remove leading AND trailing whitespaces
     
     Returns the normalized text string.
     """
+    text = text.replace("\a", "").replace("\b", "") # remove control characters
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = "\n".join(line.rstrip() for line in text.splitlines())
     text = text.strip()
