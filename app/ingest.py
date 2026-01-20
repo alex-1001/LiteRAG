@@ -64,7 +64,15 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str
     Chunk the text into chunks of the given size, with the given overlap.
     Returns a list of tuples containing (chunk text, metadata).
     """
-    assert 0 <= chunk_overlap < chunk_size, "Chunk overlap must be less than chunk size."
+    if chunk_overlap >= chunk_size:
+        raise ValueError("Chunk overlap must be less than chunk size.")
+    
+    if chunk_overlap < 0:
+        raise ValueError("Chunk overlap must be greater or equal to 0.")
+    
+    if chunk_size <= 0:
+        raise ValueError("Chunk size must be greater than 0.")
+    
     if not text:
         return []
 
@@ -72,19 +80,40 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str
     tokens = encoder.encode(text) # list of token ids (integers)
     
     chunks = []
-    start, end = 0, min(chunk_size - 1, len(tokens) - 1)
-    while start < len(tokens):
-        chunk_tokens = tokens[start:end+1]
-        text_chunk = encoder.decode(chunk_tokens)
-        chunks.append((text_chunk, {
-            "start_token_index": start,
-            "end_token_index": end,
-            "chunk_size": len(chunk_tokens),
-        }))
+    if chunk_size >= len(tokens):
+        chunks.append((text, {
+            "start_token_index": 0,
+            "end_token_index": len(tokens) - 1,
+            "chunk_size": len(tokens),
+        })) # returns single chunk if text is less than chunk size
+    else: 
+        start = 0
+        step_size = chunk_size - chunk_overlap
+        window_span = chunk_size - 1
         
-        start = end + 1 - chunk_overlap
-        end = min(start + chunk_size - 1, len(tokens) - 1)
+        while start + window_span < len(tokens):
+            end = start + window_span
+            chunk_tokens = tokens[start:end+1]
+            text_chunk = encoder.decode(chunk_tokens)
+            chunks.append((text_chunk, {
+                "start_token_index": start,
+                "end_token_index": end,
+                "chunk_size": len(chunk_tokens),
+            }))
+            
+            start +=  step_size
 
+        # handle tail
+        num_remaining_tokens = len(tokens) - start 
+        if num_remaining_tokens > chunk_overlap:
+            chunk_tokens = tokens[start:]
+            text_chunk = encoder.decode(chunk_tokens)
+            chunks.append((text_chunk, {
+                "start_token_index": start,
+                "end_token_index": len(tokens) - 1,
+                "chunk_size": num_remaining_tokens,
+            }))
+    
     return chunks
 
 def ingest_folder(data_dir: str) -> List[DocumentChunk]:
