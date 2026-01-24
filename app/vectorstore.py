@@ -148,7 +148,7 @@ class VectorStore:
         # check if vectors are correct shape
         vectors = np.asarray(vectors, dtype=np.float32)
         if vectors.ndim == 1:
-            vectors = vectors.reshape(shape=(1, -1))
+            vectors = vectors.reshape(1, -1)
         elif vectors.ndim != 2:
             raise ValueError(f"Vectors must be (N, dim) or (dim,) but got {vectors.shape}")
         
@@ -189,7 +189,7 @@ class VectorStore:
         # check if query is correct shape 
         query = np.asarray(query, dtype=np.float32)
         if query.ndim == 1:
-            query = query.reshape(shape=(1, -1))
+            query = query.reshape(1, -1)
         elif query.ndim != 2: 
             raise ValueError(f"Query must be (dim,) or (N, dim) but got {query.shape}")
         if query.shape[1] != self.dim:
