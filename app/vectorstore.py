@@ -243,7 +243,7 @@ class VectorStore:
             for id, chunk in self.id_to_chunk.items():
                 line = {
                     "id": id,
-                    "chunk": chunk.model_dump()
+                    "chunk": chunk.model_dump(mode="json"),
                 }
                 f.write(json.dumps(line) + "\n")
         
