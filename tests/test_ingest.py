@@ -1,6 +1,5 @@
 import pytest
 from typing import List
-from unittest.mock import patch, Mock
 from app.ingest import normalize_whitespace, load_text_documents, chunk_text, ingest_folder
 from app.models import DocumentChunk
 from pathlib import Path
@@ -104,32 +103,34 @@ class TestLoadTextDocuments:
         with pytest.raises(NotADirectoryError):
             load_text_documents(str(file_path))
 
-class MockTiktoken:
+class MockTokenizer:
     def __init__(self):
         self._words = []
     
-    def encode(self, text: str) -> List[int]:
+    def encode(self, text: str, **kwargs) -> List[int]:
         """Split text into words, return as token IDs"""
         self._words = text.split()
-        return list(range(len(self._words)))  # Return [0, 1, 2, ...]
+        word_ids = list(range(len(self._words))) # [0, 1, 2, ...]
+        return {"input_ids": word_ids} # expected format for hugging face tokenizers  
     
-    def decode(self, tokens: List[int]) -> str:
+    def decode(self, tokens: List[int], **kwargs) -> str:
         """Reconstruct text from token IDs"""
         words = [self._words[i] for i in tokens if 0 <= i < len(self._words)]
         return " ".join(words)
+    
+    def __call__(self, text: str, **kwargs) -> List[int]:
+        return self.encode(text, **kwargs)
 
 @pytest.fixture
-def mock_tiktoken():
-    with patch("tiktoken.get_encoding") as mock_get_encoding:
-        mock_get_encoding.return_value = MockTiktoken()
-        yield mock_get_encoding
+def mock_tokenizer():
+    yield MockTokenizer()
         
 class TestChunkText:
     """Test suite for chunk_text()"""
-    def test_empty_text(self, mock_tiktoken):
+    def test_empty_text(self, mock_tokenizer):
         """returns empty list if text is empty"""
         text = ""
-        chunks = chunk_text(text, 100, 1)
+        chunks = chunk_text(text, 100, 1, mock_tokenizer)
         assert chunks == []
     
     @pytest.mark.parametrize("text, chunk_size, overlap, expected", [
@@ -137,9 +138,9 @@ class TestChunkText:
         ("word word word", 3, 1, [("word word word", {"start_token_index": 0, "end_token_index": 2, "chunk_size": 3})]),
         ("word word word", 3, 0, [("word word word", {"start_token_index": 0, "end_token_index": 2, "chunk_size": 3})]),
     ])
-    def test_single_chunk(self, mock_tiktoken, text, chunk_size, overlap, expected):
+    def test_single_chunk(self, mock_tokenizer, text, chunk_size, overlap, expected):
         """returns single chunk if text is less than chunk size"""
-        chunks = chunk_text(text, chunk_size, overlap)
+        chunks = chunk_text(text, chunk_size, overlap, mock_tokenizer)
         assert chunks == expected
     
     @pytest.mark.parametrize("text, chunk_size, overlap, num_chunks", [
@@ -151,18 +152,18 @@ class TestChunkText:
         ("word " * 4, 3, 2, 2),
         ("word " * 9, 4, 0, 3),
     ])
-    def test_multiple_chunks(self, mock_tiktoken, text, chunk_size, overlap, num_chunks):
+    def test_multiple_chunks(self, mock_tokenizer, text, chunk_size, overlap, num_chunks):
         """returns multiple chunks if text is greater than chunk size"""
-        chunks = chunk_text(text, chunk_size, overlap)
+        chunks = chunk_text(text, chunk_size, overlap, mock_tokenizer)
         assert len(chunks) == num_chunks
     
     @pytest.mark.parametrize("text, chunk_size, overlap, expected", [
         ("word " * 5, 3, 1, {"start_token_index": 0, "end_token_index": 2, "chunk_size": 3}),
         ("word " * 5, 3, 0, {"start_token_index": 0, "end_token_index": 2, "chunk_size": 3}),
     ])
-    def test_metadata(self, mock_tiktoken, text, chunk_size, overlap, expected):
+    def test_metadata(self, mock_tokenizer, text, chunk_size, overlap, expected):
         """includes correct metadata about chunk boundaries and size"""
-        chunks = chunk_text(text, chunk_size, overlap)
+        chunks = chunk_text(text, chunk_size, overlap, mock_tokenizer)
         assert chunks[0][1] == expected
         for _, metadata in chunks:
             assert "start_token_index" in metadata
@@ -178,10 +179,10 @@ class TestChunkText:
                 "but the start index is after the end index in chunk metadata."
             )
             
-    def test_chunks_have_overlap(self, mock_tiktoken):
+    def test_chunks_have_overlap(self, mock_tokenizer):
         """Verify that consecutive chunks actually overlap"""
         text = "word " * 20
-        chunks = chunk_text(text, chunk_size=5, chunk_overlap=2)
+        chunks = chunk_text(text, chunk_size=5, chunk_overlap=2, tokenizer=mock_tokenizer)
         
         if len(chunks) > 1:
             first_end = chunks[0][1]["end_token_index"]
@@ -195,24 +196,24 @@ class TestChunkText:
         (10, -1),
         (0, 1),
     ])
-    def test_invalid_overlap(self, chunk_size, overlap):
+    def test_invalid_overlap(self, chunk_size, overlap, mock_tokenizer):
         """raises ValueError if overlap is greater than or equal to chunk size"""
         with pytest.raises(ValueError):
-            chunk_text("word " * 10, chunk_size, overlap)
+            chunk_text("word " * 10, chunk_size, overlap, mock_tokenizer)
 
 class TestIngestFolder:
     """Test suite for ingest_folder()"""
     
-    def test_returns_document_chunks(self, temp_doc_dir, mock_tiktoken):
+    def test_returns_document_chunks(self, temp_doc_dir, mock_tokenizer):
         """returns list of DocumentChunk objects"""
-        chunks = ingest_folder(str(temp_doc_dir))
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
         assert isinstance(chunks, list)
         assert len(chunks) > 0
         assert all(isinstance(chunk, DocumentChunk) for chunk in chunks)
     
-    def test_chunks_have_required_fields(self, temp_doc_dir, mock_tiktoken):
+    def test_chunks_have_required_fields(self, temp_doc_dir, mock_tokenizer):
         """all chunks have required DocumentChunk fields"""
-        chunks = ingest_folder(str(temp_doc_dir))
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
         for chunk in chunks:
             assert chunk.document_id is not None
             assert isinstance(chunk.document_id, UUID)
@@ -222,10 +223,10 @@ class TestIngestFolder:
             assert len(chunk.text) > 0  # Not empty
             assert isinstance(chunk.metadata, dict)
     
-    def test_document_id_deterministic(self, temp_doc_dir, mock_tiktoken):
+    def test_document_id_deterministic(self, temp_doc_dir, mock_tokenizer):
         """same document always gets same document_id"""
-        chunks1 = ingest_folder(str(temp_doc_dir))
-        chunks2 = ingest_folder(str(temp_doc_dir))
+        chunks1 = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks2 = ingest_folder(str(temp_doc_dir), mock_tokenizer)
         
         # Group chunks by document_name
         doc_ids1 = {chunk.document_name: chunk.document_id for chunk in chunks1}
@@ -234,9 +235,9 @@ class TestIngestFolder:
         # Same documents should have same IDs
         assert doc_ids1 == doc_ids2
     
-    def test_chunk_id_format(self, temp_doc_dir, mock_tiktoken):
+    def test_chunk_id_format(self, temp_doc_dir, mock_tokenizer):
         """chunk_id follows expected format: {document_id}-{index}"""
-        chunks = ingest_folder(str(temp_doc_dir))
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
         
         # Group chunks by document
         from collections import defaultdict
@@ -252,9 +253,9 @@ class TestIngestFolder:
                     f"Expected chunk_id '{expected_chunk_id}', got '{chunk.chunk_id}'"
                 )
     
-    def test_processes_all_documents(self, temp_doc_dir, mock_tiktoken):
+    def test_processes_all_documents(self, temp_doc_dir, mock_tokenizer):
         """processes all valid documents in directory"""
-        chunks = ingest_folder(str(temp_doc_dir))
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
         
         # Get unique document names
         doc_names = set(chunk.document_name for chunk in chunks)
@@ -266,9 +267,9 @@ class TestIngestFolder:
         assert "empty.txt" not in doc_names  # Should be skipped
         assert "python.py" not in doc_names  # Should be ignored
     
-    def test_each_document_has_unique_id(self, temp_doc_dir, mock_tiktoken):
+    def test_each_document_has_unique_id(self, temp_doc_dir, mock_tokenizer):
         """each document gets a unique document_id"""
-        chunks = ingest_folder(str(temp_doc_dir))
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
         
         # Group by document_name
         from collections import defaultdict
@@ -291,9 +292,9 @@ class TestIngestFolder:
             "Multiple documents share the same document_id"
         )
     
-    def test_chunks_contain_text(self, temp_doc_dir, mock_tiktoken):
+    def test_chunks_contain_text(self, temp_doc_dir, mock_tokenizer):
         """chunks contain actual text content"""
-        chunks = ingest_folder(str(temp_doc_dir))
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
         
         for chunk in chunks:
             assert chunk.text
@@ -301,32 +302,32 @@ class TestIngestFolder:
             # Text should be from the original document
             assert isinstance(chunk.text, str)
     
-    def test_empty_directory(self, tmp_path, mock_tiktoken):
+    def test_empty_directory(self, tmp_path, mock_tokenizer):
         """returns empty list for directory with no text files"""
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         
-        chunks = ingest_folder(str(empty_dir))
+        chunks = ingest_folder(str(empty_dir), mock_tokenizer)
         assert chunks == []
     
-    def test_single_document(self, tmp_path, mock_tiktoken):
+    def test_single_document(self, tmp_path, mock_tokenizer):
         """handles directory with single document"""
         data_dir = tmp_path / "single_doc"
         data_dir.mkdir()
         (data_dir / "only.txt").write_text("Single document content.")
         
-        chunks = ingest_folder(str(data_dir))
+        chunks = ingest_folder(str(data_dir), mock_tokenizer)
         assert len(chunks) > 0
         assert all(chunk.document_name == "only.txt" for chunk in chunks)
     
-    def test_propagates_errors(self, tmp_path, mock_tiktoken):
+    def test_propagates_errors(self, tmp_path, mock_tokenizer):
         """propagates errors from load_text_documents"""
         # Test that FileNotFoundError is raised
         with pytest.raises(FileNotFoundError):
-            ingest_folder("/nonexistent/path/12345")
+            ingest_folder("/nonexistent/path/12345", mock_tokenizer)
         
         # Test that NotADirectoryError is raised
         file_path = tmp_path / "not_a_dir.txt"
         file_path.write_text("test")
         with pytest.raises(NotADirectoryError):
-            ingest_folder(str(file_path))
+            ingest_folder(str(file_path), mock_tokenizer)

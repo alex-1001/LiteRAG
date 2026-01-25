@@ -6,11 +6,11 @@ from app.models import DocumentChunk
 from typing import List, Tuple, Dict, Any
 from pathlib import Path
 from uuid import uuid5, NAMESPACE_DNS
-import tiktoken
 import os 
 from dotenv import load_dotenv
+from transformers import PreTrainedTokenizerBase
 
-load_dotenv()
+load_dotenv() # maybe move this elsewhere later
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "400"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
 
@@ -59,7 +59,7 @@ def load_text_documents(data_dir: str) -> List[Tuple[Path, str]]:
         
     return documents
 
-def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str, Dict[str, Any]]]:
+def chunk_text(text: str, chunk_size: int, chunk_overlap: int, tokenizer: PreTrainedTokenizerBase) -> List[Tuple[str, Dict[str, Any]]]:
     """
     Chunk the text into chunks of the given size, with the given overlap.
     Returns a list of tuples containing (chunk text, metadata).
@@ -76,8 +76,7 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str
     if not text:
         return []
 
-    encoder = tiktoken.get_encoding("o200k_base") # uses gpt-4o encodings
-    tokens = encoder.encode(text) # list of token ids (integers)
+    tokens = tokenizer(text, add_special_tokens=False, return_tensors=None)["input_ids"] # list of token ids (integers)
     
     chunks = []
     if chunk_size >= len(tokens):
@@ -94,7 +93,7 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str
         while start + window_span < len(tokens):
             end = start + window_span
             chunk_tokens = tokens[start:end+1]
-            text_chunk = encoder.decode(chunk_tokens)
+            text_chunk = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
             chunks.append((text_chunk, {
                 "start_token_index": start,
                 "end_token_index": end,
@@ -107,7 +106,7 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str
         num_remaining_tokens = len(tokens) - start 
         if num_remaining_tokens > chunk_overlap:
             chunk_tokens = tokens[start:]
-            text_chunk = encoder.decode(chunk_tokens)
+            text_chunk = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
             chunks.append((text_chunk, {
                 "start_token_index": start,
                 "end_token_index": len(tokens) - 1,
@@ -116,7 +115,7 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str
     
     return chunks
 
-def ingest_folder(data_dir: str) -> List[DocumentChunk]:
+def ingest_folder(data_dir: str, tokenizer: PreTrainedTokenizerBase) -> List[DocumentChunk]:
     """
     Processes the folder of documents into chunks.
     Returns a list of DocumentChunks.
@@ -129,7 +128,7 @@ def ingest_folder(data_dir: str) -> List[DocumentChunk]:
     for doc_path, text in documents:
         document_name = doc_path.name
         document_id = uuid5(NAMESPACE_DNS, doc_path.as_posix().lower())
-        chunks = chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP)
+        chunks = chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP, tokenizer)
         for i, (text_chunk, metadata) in enumerate(chunks):
             chunk_id = f"{str(document_id)}-{i}"
             document_chunks.append(DocumentChunk(

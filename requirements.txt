@@ -4,7 +4,6 @@ pydantic-settings
 hnswlib
 numpy
 python-dotenv
-tiktoken
 
 # LLM API client (OpenRouter uses OpenAI-compatible API)
 openai
