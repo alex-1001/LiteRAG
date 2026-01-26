@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 from transformers import PreTrainedTokenizerBase
 
 load_dotenv() # maybe move this elsewhere later
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "400"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "200"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))
 
 def _validate_data_dir(data_dir: str) -> Path:
     """Validate and return Path object for data directory."""
