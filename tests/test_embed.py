@@ -1,22 +1,9 @@
 import pytest
 import numpy as np
 from unittest.mock import patch, Mock
-from uuid import uuid4
 
 from app.embed import Embedder
-from app.models import DocumentChunk
-
-
-def _make_chunk(text: str, document_name: str = "doc", chunk_id: str = "0") -> DocumentChunk:
-    """Build a DocumentChunk for tests with required fields and defaults."""
-    return DocumentChunk(
-        document_id=uuid4(),
-        document_name=document_name,
-        chunk_id=chunk_id,
-        text=text,
-        metadata={},
-    )
-
+from tests.conftest import _make_chunk
 
 @pytest.fixture
 def mock_sentence_transformer():
