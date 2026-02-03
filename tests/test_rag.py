@@ -13,6 +13,13 @@ from openai import APIError
 from tests.conftest import _make_chunk
 
 
+@pytest.fixture
+def mock_call_llm():
+    """Patch app.rag.call_llm; yield the mock for tests to configure return_value."""
+    with patch("app.rag.call_llm") as m:
+        yield m
+
+
 class TestFormatContext:
     """Test suite for format_context()."""
 
@@ -159,20 +166,18 @@ class TestAnswerQuery:
         with pytest.raises(ValueError, match="Query cannot be empty"):
             answer_query("", [_make_chunk("x")])
 
-    def test_empty_retrieved_chunks_returns_fixed_message_without_calling_llm(self):
+    def test_empty_retrieved_chunks_returns_fixed_message_without_calling_llm(self, mock_call_llm):
         """Empty retrieved_chunks returns fixed message and [] without calling call_llm."""
-        with patch("app.rag.call_llm") as mock_call_llm:
-            answer, cited = answer_query("something", [])
+        answer, cited = answer_query("something", [])
         assert answer == "No relevant documents are associated with this query."
         assert cited == []
         mock_call_llm.assert_not_called()
 
-    def test_happy_path_returns_answer_and_cited_sources(self):
+    def test_happy_path_returns_answer_and_cited_sources(self, mock_call_llm):
         """Valid JSON from call_llm returns (answer, cited_sources) and call_llm called with messages from format_context."""
         chunks = [_make_chunk("a"), _make_chunk("b")]
-        with patch("app.rag.call_llm") as mock_call_llm:
-            mock_call_llm.return_value = json.dumps({"answer": "Yes.", "cited_sources": [1, 2]})
-            answer, cited = answer_query("Q?", chunks)
+        mock_call_llm.return_value = json.dumps({"answer": "Yes.", "cited_sources": [1, 2]})
+        answer, cited = answer_query("Q?", chunks)
         assert answer == "Yes."
         assert cited == [1, 2]
         mock_call_llm.assert_called_once()
@@ -185,51 +190,51 @@ class TestAnswerQuery:
         assert "b" in user_content
         assert "Q?" in user_content
 
-    def test_invalid_json_raises_value_error(self):
+    def test_invalid_json_raises_value_error(self, mock_call_llm):
         """call_llm returning non-JSON raises ValueError."""
-        with patch("app.rag.call_llm", return_value="not json at all"):
-            with pytest.raises(ValueError, match="LLM returned invalid JSON"):
-                answer_query("Q", [_make_chunk("x")])
+        mock_call_llm.return_value = "not json at all"
+        with pytest.raises(ValueError, match="LLM returned invalid JSON"):
+            answer_query("Q", [_make_chunk("x")])
 
-    def test_missing_answer_or_cited_sources_raises_value_error(self):
+    def test_missing_answer_or_cited_sources_raises_value_error(self, mock_call_llm):
         """JSON missing answer or cited_sources raises ValueError."""
-        with patch("app.rag.call_llm", return_value=json.dumps({"answer": "x"})):
-            with pytest.raises(ValueError, match="missing 'answer' or 'cited_sources'"):
-                answer_query("Q", [_make_chunk("x")])
-        with patch("app.rag.call_llm", return_value=json.dumps({"cited_sources": []})):
-            with pytest.raises(ValueError, match="missing 'answer' or 'cited_sources'"):
-                answer_query("Q", [_make_chunk("x")])
+        mock_call_llm.return_value = json.dumps({"answer": "x"})
+        with pytest.raises(ValueError, match="missing 'answer' or 'cited_sources'"):
+            answer_query("Q", [_make_chunk("x")])
+        mock_call_llm.return_value = json.dumps({"cited_sources": []})
+        with pytest.raises(ValueError, match="missing 'answer' or 'cited_sources'"):
+            answer_query("Q", [_make_chunk("x")])
 
-    def test_empty_answer_raises_value_error(self):
+    def test_empty_answer_raises_value_error(self, mock_call_llm):
         """Empty answer string raises ValueError."""
-        with patch("app.rag.call_llm", return_value=json.dumps({"answer": "", "cited_sources": []})):
-            with pytest.raises(ValueError, match="LLM answer is empty"):
-                answer_query("Q", [_make_chunk("x")])
+        mock_call_llm.return_value = json.dumps({"answer": "", "cited_sources": []})
+        with pytest.raises(ValueError, match="LLM answer is empty"):
+            answer_query("Q", [_make_chunk("x")])
 
-    def test_answer_not_string_raises_type_error(self):
+    def test_answer_not_string_raises_type_error(self, mock_call_llm):
         """answer not a string raises TypeError."""
-        with patch("app.rag.call_llm", return_value=json.dumps({"answer": 42, "cited_sources": []})):
-            with pytest.raises(TypeError, match="LLM answer must be a string"):
-                answer_query("Q", [_make_chunk("x")])
+        mock_call_llm.return_value = json.dumps({"answer": 42, "cited_sources": []})
+        with pytest.raises(TypeError, match="LLM answer must be a string"):
+            answer_query("Q", [_make_chunk("x")])
 
-    def test_cited_sources_not_list_raises_type_error(self):
+    def test_cited_sources_not_list_raises_type_error(self, mock_call_llm):
         """cited_sources not a list raises TypeError."""
-        with patch("app.rag.call_llm", return_value=json.dumps({"answer": "ok", "cited_sources": "1,2"})):
-            with pytest.raises(TypeError, match="LLM cited sources must be a list"):
-                answer_query("Q", [_make_chunk("x")])
+        mock_call_llm.return_value = json.dumps({"answer": "ok", "cited_sources": "1,2"})
+        with pytest.raises(TypeError, match="LLM cited sources must be a list"):
+            answer_query("Q", [_make_chunk("x")])
 
-    def test_cited_sources_non_integer_raises_type_error(self):
+    def test_cited_sources_non_integer_raises_type_error(self, mock_call_llm):
         """cited_sources containing non-integer raises TypeError."""
-        with patch("app.rag.call_llm", return_value=json.dumps({"answer": "ok", "cited_sources": [1, "2"]})):
-            with pytest.raises(TypeError, match="LLM cited sources must be a list of integers"):
-                answer_query("Q", [_make_chunk("a"), _make_chunk("b")])
+        mock_call_llm.return_value = json.dumps({"answer": "ok", "cited_sources": [1, "2"]})
+        with pytest.raises(TypeError, match="LLM cited sources must be a list of integers"):
+            answer_query("Q", [_make_chunk("a"), _make_chunk("b")])
 
-    def test_cited_sources_out_of_range_raises_value_error(self):
+    def test_cited_sources_out_of_range_raises_value_error(self, mock_call_llm):
         """Citation id <= 0 or > len(retrieved_chunks) raises ValueError."""
         chunks = [_make_chunk("a"), _make_chunk("b")]
-        with patch("app.rag.call_llm", return_value=json.dumps({"answer": "ok", "cited_sources": [0]})):
-            with pytest.raises(ValueError, match="within the range"):
-                answer_query("Q", chunks)
-        with patch("app.rag.call_llm", return_value=json.dumps({"answer": "ok", "cited_sources": [3]})):
-            with pytest.raises(ValueError, match="within the range"):
-                answer_query("Q", chunks)
+        mock_call_llm.return_value = json.dumps({"answer": "ok", "cited_sources": [0]})
+        with pytest.raises(ValueError, match="within the range"):
+            answer_query("Q", chunks)
+        mock_call_llm.return_value = json.dumps({"answer": "ok", "cited_sources": [3]})
+        with pytest.raises(ValueError, match="within the range"):
+            answer_query("Q", chunks)
