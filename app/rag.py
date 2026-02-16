@@ -2,8 +2,6 @@
 from app.models import DocumentChunk
 from typing import List, Dict, Optional, Tuple
 from openai import OpenAI, APIError
-import os
-from dotenv import load_dotenv
 import json
 
 SYSTEM_PROMPT: str = """
@@ -27,7 +25,6 @@ CONTEXT:
 Respond with a JSON object with "answer" and "cited_sources" as described in the instructions.
 """.strip()
 
-load_dotenv() #TODO: move to main module later
 
 def format_context(retrieved_chunks: List[DocumentChunk]) -> str:
     """formats retrieved chunks into one string to serve as context for LLM"""
@@ -54,17 +51,30 @@ def create_rag_messages(query: str, context: str) -> List[Dict[str, str]]:
     
     return messages
 
-def call_llm(messages: List[Dict[str, str]], client: Optional[OpenAI] = None, return_json: bool = False, temperature: float = 0.0, max_tokens: int = 1000) -> str:
-    """handles LLM call for a given system and user messages"""
+def call_llm(
+    messages: List[Dict[str, str]],
+    client: Optional[OpenAI] = None,
+    *,
+    llm_base_url: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    return_json: bool = False,
+    temperature: float = 0.0,
+    max_tokens: int = 1000,
+) -> str:
+    """handles LLM call for a given system and user messages.
+    When client is None, llm_base_url, llm_api_key, and llm_model must be provided (e.g. from app config)."""
     if client is None:
-        client = OpenAI(
-            base_url=os.environ.get("OPENROUTER_BASE_URL"),
-            api_key=os.environ.get("OPENROUTER_API_KEY"),
-        )
-    
+        if not all([llm_base_url, llm_api_key, llm_model]):
+            raise ValueError(
+                "When client is None, llm_base_url, llm_api_key, and llm_model must be provided."
+            )
+        client = OpenAI(base_url=llm_base_url, api_key=llm_api_key)
+    elif llm_model is None:
+        raise ValueError("llm_model must be provided for chat.completions.create().")
     try:
         response = client.chat.completions.create(
-            model=os.environ.get("OPENROUTER_MODEL"),
+            model=llm_model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -76,8 +86,17 @@ def call_llm(messages: List[Dict[str, str]], client: Optional[OpenAI] = None, re
     content = response.choices[0].message.content.strip()
     return content if content else ""
 
-def answer_query(query: str, retrieved_chunks: List[DocumentChunk]) -> Tuple[str, List[int]]:
-    """returns LLM answer based on retrieved chunks and query (str) and cited sources (list of ints)"""
+def answer_query(
+    query: str,
+    retrieved_chunks: List[DocumentChunk],
+    *,
+    client: Optional[OpenAI] = None,
+    llm_base_url: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_model: Optional[str] = None,
+) -> Tuple[str, List[int]]:
+    """returns LLM answer based on retrieved chunks and query (str) and cited sources (list of ints).
+    When client is None, llm_base_url, llm_api_key, and llm_model must be provided (e.g. from app config)."""
     if not query:
         raise ValueError("Query cannot be empty")
     if not retrieved_chunks:
@@ -85,7 +104,14 @@ def answer_query(query: str, retrieved_chunks: List[DocumentChunk]) -> Tuple[str
     
     context = format_context(retrieved_chunks)
     messages = create_rag_messages(query, context)
-    response = call_llm(messages, return_json=True)
+    response = call_llm(
+        messages,
+        client=client,
+        return_json=True,
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
+        llm_model=llm_model,
+    )
     try:
         response_dict = json.loads(response)
     except json.JSONDecodeError as e:

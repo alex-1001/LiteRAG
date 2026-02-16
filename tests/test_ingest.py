@@ -206,14 +206,14 @@ class TestIngestFolder:
     
     def test_returns_document_chunks(self, temp_doc_dir, mock_tokenizer):
         """returns list of DocumentChunk objects"""
-        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         assert isinstance(chunks, list)
         assert len(chunks) > 0
         assert all(isinstance(chunk, DocumentChunk) for chunk in chunks)
     
     def test_chunks_have_required_fields(self, temp_doc_dir, mock_tokenizer):
         """all chunks have required DocumentChunk fields"""
-        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         for chunk in chunks:
             assert chunk.document_id is not None
             assert isinstance(chunk.document_id, UUID)
@@ -225,8 +225,8 @@ class TestIngestFolder:
     
     def test_document_id_deterministic(self, temp_doc_dir, mock_tokenizer):
         """same document always gets same document_id"""
-        chunks1 = ingest_folder(str(temp_doc_dir), mock_tokenizer)
-        chunks2 = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks1 = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
+        chunks2 = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         
         # Group chunks by document_name
         doc_ids1 = {chunk.document_name: chunk.document_id for chunk in chunks1}
@@ -237,7 +237,7 @@ class TestIngestFolder:
     
     def test_chunk_id_format(self, temp_doc_dir, mock_tokenizer):
         """chunk_id follows expected format: {document_id}-{index}"""
-        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         
         # Group chunks by document
         from collections import defaultdict
@@ -255,7 +255,7 @@ class TestIngestFolder:
     
     def test_processes_all_documents(self, temp_doc_dir, mock_tokenizer):
         """processes all valid documents in directory"""
-        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         
         # Get unique document names
         doc_names = set(chunk.document_name for chunk in chunks)
@@ -269,7 +269,7 @@ class TestIngestFolder:
     
     def test_each_document_has_unique_id(self, temp_doc_dir, mock_tokenizer):
         """each document gets a unique document_id"""
-        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         
         # Group by document_name
         from collections import defaultdict
@@ -294,7 +294,7 @@ class TestIngestFolder:
     
     def test_chunks_contain_text(self, temp_doc_dir, mock_tokenizer):
         """chunks contain actual text content"""
-        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer)
+        chunks = ingest_folder(str(temp_doc_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         
         for chunk in chunks:
             assert chunk.text
@@ -307,7 +307,7 @@ class TestIngestFolder:
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         
-        chunks = ingest_folder(str(empty_dir), mock_tokenizer)
+        chunks = ingest_folder(str(empty_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         assert chunks == []
     
     def test_single_document(self, tmp_path, mock_tokenizer):
@@ -316,7 +316,7 @@ class TestIngestFolder:
         data_dir.mkdir()
         (data_dir / "only.txt").write_text("Single document content.")
         
-        chunks = ingest_folder(str(data_dir), mock_tokenizer)
+        chunks = ingest_folder(str(data_dir), mock_tokenizer, chunk_size=200, chunk_overlap=50)
         assert len(chunks) > 0
         assert all(chunk.document_name == "only.txt" for chunk in chunks)
     
@@ -324,10 +324,10 @@ class TestIngestFolder:
         """propagates errors from load_text_documents"""
         # Test that FileNotFoundError is raised
         with pytest.raises(FileNotFoundError):
-            ingest_folder("/nonexistent/path/12345", mock_tokenizer)
+            ingest_folder("/nonexistent/path/12345", mock_tokenizer, chunk_size=200, chunk_overlap=50)
         
         # Test that NotADirectoryError is raised
         file_path = tmp_path / "not_a_dir.txt"
         file_path.write_text("test")
         with pytest.raises(NotADirectoryError):
-            ingest_folder(str(file_path), mock_tokenizer)
+            ingest_folder(str(file_path), mock_tokenizer, chunk_size=200, chunk_overlap=50)

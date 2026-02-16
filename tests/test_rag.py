@@ -96,7 +96,12 @@ class TestCallLlm:
         mock_response.choices[0].message.content = "  reply text  "
         mock_client.chat.completions.create.return_value = mock_response
 
-        result = call_llm([{"role": "user", "content": "hi"}], client=mock_client, return_json=False)
+        result = call_llm(
+            [{"role": "user", "content": "hi"}],
+            client=mock_client,
+            llm_model="test-model",
+            return_json=False,
+        )
 
         mock_client.chat.completions.create.assert_called_once()
         call_kw = mock_client.chat.completions.create.call_args[1]
@@ -112,22 +117,25 @@ class TestCallLlm:
         mock_client.chat.completions.create.return_value.choices = [Mock()]
         mock_client.chat.completions.create.return_value.choices[0].message.content = "{}"
 
-        call_llm([], client=mock_client, return_json=True)
+        call_llm([], client=mock_client, llm_model="test-model", return_json=True)
 
         call_kw = mock_client.chat.completions.create.call_args[1]
         assert call_kw["response_format"] == {"type": "json_object"}
 
-    def test_client_none_uses_env_for_openai_and_model(self):
-        """When client is None, OpenAI() gets env vars and create() gets model from env."""
+    def test_client_none_uses_provided_llm_params(self):
+        """When client is None, OpenAI() gets provided llm_* params and create() gets llm_model."""
         mock_openai_instance = Mock()
         mock_openai_instance.chat.completions.create.return_value.choices = [Mock()]
         mock_openai_instance.chat.completions.create.return_value.choices[0].message.content = "ok"
 
-        with patch("app.rag.OpenAI", return_value=mock_openai_instance) as mock_openai_cls, patch(
-            "app.rag.os.environ.get",
-            side_effect=lambda k, d=None: {"OPENROUTER_BASE_URL": "https://x", "OPENROUTER_API_KEY": "k", "OPENROUTER_MODEL": "my-model"}.get(k, d),
-        ):
-            result = call_llm([{"role": "user", "content": "q"}], client=None)
+        with patch("app.rag.OpenAI", return_value=mock_openai_instance) as mock_openai_cls:
+            result = call_llm(
+                [{"role": "user", "content": "q"}],
+                client=None,
+                llm_base_url="https://x",
+                llm_api_key="k",
+                llm_model="my-model",
+            )
 
         mock_openai_cls.assert_called_once_with(base_url="https://x", api_key="k")
         mock_openai_instance.chat.completions.create.assert_called_once()
@@ -141,7 +149,7 @@ class TestCallLlm:
         mock_client.chat.completions.create.return_value.choices = [Mock()]
         mock_client.chat.completions.create.return_value.choices[0].message.content = "   "
 
-        result = call_llm([], client=mock_client)
+        result = call_llm([], client=mock_client, llm_model="test-model")
         assert result == ""
 
     def test_api_error_propagated(self):
@@ -153,7 +161,7 @@ class TestCallLlm:
         )
 
         with pytest.raises(APIError, match="Error calling LLM"):
-            call_llm([], client=mock_client)
+            call_llm([], client=mock_client, llm_model="test-model")
 
         mock_client.chat.completions.create.assert_called_once()
 

@@ -6,13 +6,8 @@ from app.models import DocumentChunk
 from typing import List, Tuple, Dict, Any
 from pathlib import Path
 from uuid import uuid5, NAMESPACE_DNS
-import os 
-from dotenv import load_dotenv
 from transformers import PreTrainedTokenizerBase
 
-load_dotenv() # maybe move this elsewhere later
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "200"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))
 
 def _validate_data_dir(data_dir: str) -> Path:
     """Validate and return Path object for data directory."""
@@ -115,10 +110,16 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int, tokenizer: PreTra
     
     return chunks
 
-def ingest_folder(data_dir: str, tokenizer: PreTrainedTokenizerBase) -> List[DocumentChunk]:
+def ingest_folder(
+    data_dir: str,
+    tokenizer: PreTrainedTokenizerBase,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> List[DocumentChunk]:
     """
     Processes the folder of documents into chunks.
     Returns a list of DocumentChunks.
+    chunk_size and chunk_overlap are in tokens (passed from config).
     """
     data_dir = _validate_data_dir(data_dir)
     
@@ -128,7 +129,7 @@ def ingest_folder(data_dir: str, tokenizer: PreTrainedTokenizerBase) -> List[Doc
     for doc_path, text in documents:
         document_name = doc_path.name
         document_id = uuid5(NAMESPACE_DNS, doc_path.as_posix().lower())
-        chunks = chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP, tokenizer)
+        chunks = chunk_text(text, chunk_size, chunk_overlap, tokenizer)
         for i, (text_chunk, metadata) in enumerate(chunks):
             chunk_id = f"{str(document_id)}-{i}"
             document_chunks.append(DocumentChunk(
