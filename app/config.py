@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     data_dir: Optional[str] = Field(default=None, description="Default folder path for document ingest.")
 
     # Chunking (ingest)
+    tokenizer_name: Optional[str] = Field(default=None, description="HuggingFace AutoTokenizer model name for chunking. If not set, uses embed_model_name.")
     chunk_size: int = Field(default=200, ge=1, description="Token count per chunk.")
     chunk_overlap: int = Field(default=50, ge=0, description="Overlap in tokens between consecutive chunks.")
 

@@ -10,6 +10,7 @@ class TestSettings:
     def test_load_settings_reads_env_and_returns_settings(self, monkeypatch):
         """load_settings() returns Settings with values from environment."""
         monkeypatch.setenv("EMBED_MODEL_NAME", "test-model")
+        monkeypatch.delenv("TOKENIZER_NAME", raising=False)
         monkeypatch.setenv("OPENROUTER_BASE_URL", "https://api.example.com")
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
         monkeypatch.setenv("OPENROUTER_MODEL", "test-llm")
@@ -23,6 +24,7 @@ class TestSettings:
         assert settings.chunk_overlap == 50
         assert settings.top_k == 5
         assert settings.storage_dir == "./.vectorstore"
+        assert settings.tokenizer_name is None
 
     def test_settings_declares_expected_defaults(self):
         """Settings model declares the expected default values for optional fields (env/.env can override at runtime)."""
@@ -32,6 +34,7 @@ class TestSettings:
         assert Settings.model_fields["top_k"].default == 5
         assert Settings.model_fields["storage_dir"].default == "./.vectorstore"
         assert Settings.model_fields["data_dir"].default is None
+        assert Settings.model_fields["tokenizer_name"].default is None
         assert Settings.model_fields["openrouter_base_url"].default is None
         assert Settings.model_fields["openrouter_api_key"].default is None
         assert Settings.model_fields["openrouter_model"].default is None
@@ -47,3 +50,17 @@ class TestSettings:
                 chunk_size=0,
                 chunk_overlap=50,
             )
+
+    def test_tokenizer_name_optional_defaults_to_none(self, monkeypatch):
+        """When TOKENIZER_NAME is not set, tokenizer_name is None (embed_model_name used at runtime)."""
+        monkeypatch.setenv("EMBED_MODEL_NAME", "test-embed")
+        monkeypatch.delenv("TOKENIZER_NAME", raising=False)
+        settings = load_settings()
+        assert settings.tokenizer_name is None
+
+    def test_tokenizer_name_read_when_set(self, monkeypatch):
+        """When TOKENIZER_NAME is set, load_settings returns it."""
+        monkeypatch.setenv("EMBED_MODEL_NAME", "test-embed")
+        monkeypatch.setenv("TOKENIZER_NAME", "bert-base-uncased")
+        settings = load_settings()
+        assert settings.tokenizer_name == "bert-base-uncased"
