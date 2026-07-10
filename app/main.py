@@ -1,0 +1,159 @@
+"""wires together modules and exposes endpoints of API"""
+from fastapi import FastAPI, Depends, Request, HTTPException
+import time
+from typing import Dict
+from transformers import AutoTokenizer
+
+from app.models import QueryRequest, QueryResponse, IngestRequest, IngestResponse, Source
+from app.config import load_settings, Settings
+from app.embed import Embedder
+from app.vectorstore import VectorStore
+from app.ingest import ingest_folder
+from app.retrieve import retrieve_chunks
+from app.rag import answer_query
+from contextlib import asynccontextmanager
+from openai import OpenAI
+from threading import Lock
+import logging
+
+def get_config(request: Request) -> Settings:
+    return request.app.state.config
+
+def get_embedder(request: Request) -> Embedder:
+    return request.app.state.embedder
+
+def get_vectorstore(request: Request) -> VectorStore:
+    return request.app.state.vectorstore
+
+def get_tokenizer(request: Request) -> AutoTokenizer:
+    return request.app.state.tokenizer
+
+def get_client(request: Request) -> OpenAI:
+    return request.app.state.client
+
+def get_lock(request: Request) -> Lock:
+    return request.app.state.lock
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # startup
+    settings = load_settings()
+    if not all([settings.openrouter_base_url, settings.openrouter_api_key, settings.openrouter_model]):
+        raise ValueError(
+            "OPENROUTER_BASE_URL, OPENROUTER_API_KEY, and OPENROUTER_MODEL must be set for the app. "
+            "Check your .env or environment."
+        )
+    app.state.config = settings
+    
+    embedder = Embedder(settings.embed_model_name)
+    app.state.embedder = embedder
+    
+    tokenizer_name = settings.tokenizer_name or settings.embed_model_name
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    app.state.tokenizer = tokenizer
+    
+    vectorstore = VectorStore(dim=embedder.dim, storage_dir=settings.storage_dir, embed_model_name=settings.embed_model_name)
+    vectorstore.load_or_create()
+    app.state.vectorstore = vectorstore
+    
+    client = OpenAI(api_key=settings.openrouter_api_key, base_url=settings.openrouter_base_url)
+    app.state.client = client
+    
+    lock = Lock()
+    app.state.lock = lock
+    yield
+    
+    # teardown
+    try:
+        vectorstore.save()
+    except Exception as e:
+        # prevents masking other errors
+        logging.exception("Error saving vectorstore on shutdown: %s", e)
+
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/health")
+def health() -> Dict[str, str]:
+    #TODO: run more diagnostics
+    return {"status": "ok"}
+
+@app.post("/ingest")
+def ingest(
+    req: IngestRequest, 
+    config: Settings = Depends(get_config), 
+    embedder: Embedder = Depends(get_embedder),
+    tokenizer: AutoTokenizer = Depends(get_tokenizer), 
+    vectorstore: VectorStore = Depends(get_vectorstore),
+    lock: Lock = Depends(get_lock),
+) -> IngestResponse:
+    start = time.perf_counter()
+    
+    folder_path = req.folder_path or config.data_dir
+    if not folder_path:
+        raise HTTPException(status_code=400, detail="folder_path required when DATA_DIR is not set")
+    #TODO: add more error handling
+    
+    chunks = ingest_folder(folder_path, tokenizer, config.chunk_size, config.chunk_overlap)
+    vectors = embedder.embed_chunks(chunks)
+    
+    with lock:
+        if req.force_rebuild:
+            vectorstore.clear()
+            vectorstore.create()
+        
+        vectorstore.add(vectors, chunks)
+        vectorstore.save()
+        
+    doc_ids = list({c.document_id for c in chunks})
+    elapsed = time.perf_counter() - start
+    
+    return IngestResponse(
+        documents_processed=len(doc_ids),
+        chunks_created=len(chunks),
+        document_ids=doc_ids,
+        processing_time_seconds=elapsed,
+    )
+
+@app.post("/query")
+def query(
+    req: QueryRequest,
+    config: Settings = Depends(get_config),
+    embedder: Embedder = Depends(get_embedder),
+    client: OpenAI = Depends(get_client),
+    vectorstore: VectorStore = Depends(get_vectorstore),
+) -> QueryResponse:
+    top_k = req.top_k or config.top_k
+    
+    chunks, distances = retrieve_chunks(
+        req.question,
+        vectorstore,
+        embedder,
+        top_k=top_k,
+    )
+
+    answer, cited_ids = answer_query(
+        req.question,
+        chunks,
+        client=client,
+        llm_model=config.openrouter_model
+    )
+    
+    # chunks actually cited in answer
+    sources = []
+    for cid in cited_ids:
+        chunk = chunks[cid - 1] # comes as 1-indexed
+        sources.append(
+            Source(
+                document_name=chunk.document_name,
+                document_id=chunk.document_id,
+                chunk_id=chunk.chunk_id,
+                snippet=chunk.text,
+                score=1.0 - distances[cid - 1],
+            )
+        )
+        
+    return QueryResponse(
+        answer=answer,
+        used_retrieval=len(chunks) > 0,
+        sources=sources,
+    )
