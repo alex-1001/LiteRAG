@@ -1,6 +1,7 @@
 import pytest
-from app.main import app, get_client, get_config, get_embedder, get_vectorstore, get_lock, get_tokenizer
+from app.main import app, lifespan, get_client, get_config, get_embedder, get_vectorstore, get_lock, get_tokenizer
 from app.config import Settings
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
 from tests.conftest import _make_chunk
@@ -12,6 +13,10 @@ def main_app_overrides():
     app.dependency_overrides.clear()
     yield app.dependency_overrides
     app.dependency_overrides.clear()
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
 
 class TestHealth:
     def test_health_returns_ok(self):
@@ -277,3 +282,109 @@ class TestQuery:
         response = query_app_context.test_app.post("/query", json=payload)
 
         assert response.status_code == 422
+
+class TestLifespan:
+    @pytest.fixture
+    def lifespan_settings(self):
+        return Settings(
+            embed_model_name="test-embed",
+            tokenizer_name="test-tokenizer",
+            storage_dir="/tmp/vectorstore",
+            openrouter_base_url="https://example.com",
+            openrouter_api_key="test-key",
+            openrouter_model="test-llm",
+        )
+
+    @pytest.mark.anyio
+    async def test_lifespan_requires_openrouter_settings(self):
+        settings = Settings(
+            embed_model_name="test-embed",
+            openrouter_base_url=None,
+            openrouter_api_key="test-key",
+            openrouter_model="test-llm",
+        )
+        test_app = FastAPI()
+
+        with patch("app.main.load_settings", return_value=settings):
+            with pytest.raises(ValueError, match="OPENROUTER_BASE_URL"):
+                async with lifespan(test_app):
+                    pass
+
+    @pytest.mark.anyio
+    async def test_lifespan_wires_startup_dependencies(self, lifespan_settings):
+        test_app = FastAPI()
+        fake_embedder = Mock()
+        fake_embedder.dim = 384
+        fake_tokenizer = Mock()
+        fake_vectorstore = Mock()
+        fake_client = Mock()
+
+        with (
+            patch("app.main.load_settings", return_value=lifespan_settings),
+            patch("app.main.Embedder", return_value=fake_embedder) as mock_embedder_cls,
+            patch("app.main.AutoTokenizer.from_pretrained", return_value=fake_tokenizer) as mock_tokenizer_loader,
+            patch("app.main.VectorStore", return_value=fake_vectorstore) as mock_vectorstore_cls,
+            patch("app.main.OpenAI", return_value=fake_client) as mock_openai_cls,
+        ):
+            async with lifespan(test_app):
+                assert test_app.state.config is lifespan_settings
+                assert test_app.state.embedder is fake_embedder
+                assert test_app.state.tokenizer is fake_tokenizer
+                assert test_app.state.vectorstore is fake_vectorstore
+                assert test_app.state.client is fake_client
+                assert test_app.state.lock is not None
+
+        mock_embedder_cls.assert_called_once_with("test-embed")
+        mock_tokenizer_loader.assert_called_once_with("test-tokenizer")
+        mock_vectorstore_cls.assert_called_once_with(
+            dim=384,
+            storage_dir="/tmp/vectorstore",
+            embed_model_name="test-embed",
+        )
+        fake_vectorstore.load_or_create.assert_called_once()
+        mock_openai_cls.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://example.com",
+        )
+        fake_vectorstore.save.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_lifespan_uses_embed_model_when_tokenizer_name_missing(self, lifespan_settings):
+        settings = lifespan_settings.model_copy(update={"tokenizer_name": None})
+        test_app = FastAPI()
+        fake_embedder = Mock()
+        fake_embedder.dim = 384
+
+        with (
+            patch("app.main.load_settings", return_value=settings),
+            patch("app.main.Embedder", return_value=fake_embedder),
+            patch("app.main.AutoTokenizer.from_pretrained") as mock_tokenizer_loader,
+            patch("app.main.VectorStore", return_value=Mock()),
+            patch("app.main.OpenAI", return_value=Mock()),
+        ):
+            async with lifespan(test_app):
+                pass
+
+        mock_tokenizer_loader.assert_called_once_with("test-embed")
+
+    @pytest.mark.anyio
+    async def test_lifespan_logs_vectorstore_save_error_on_shutdown(self, lifespan_settings):
+        test_app = FastAPI()
+        fake_embedder = Mock()
+        fake_embedder.dim = 384
+        fake_vectorstore = Mock()
+        fake_vectorstore.save.side_effect = RuntimeError("save failed")
+
+        with (
+            patch("app.main.load_settings", return_value=lifespan_settings),
+            patch("app.main.Embedder", return_value=fake_embedder),
+            patch("app.main.AutoTokenizer.from_pretrained", return_value=Mock()),
+            patch("app.main.VectorStore", return_value=fake_vectorstore),
+            patch("app.main.OpenAI", return_value=Mock()),
+            patch("app.main.logging.exception") as mock_log_exception,
+        ):
+            async with lifespan(test_app):
+                pass
+
+        fake_vectorstore.save.assert_called_once()
+        mock_log_exception.assert_called_once()
