@@ -24,8 +24,8 @@ class Settings(BaseSettings):
         description="Directory for vector index and metadata files.",
     )
 
-    # Optional default data dir for ingest when request omits folder_path
-    data_dir: Optional[str] = Field(default=None, description="Default folder path for document ingest.")
+    # Root folder for document ingest. Requests can only select paths inside this directory.
+    data_dir: Optional[str] = Field(default=None, description="Root folder that bounds document ingest.")
 
     # Chunking (ingest)
     tokenizer_name: Optional[str] = Field(default=None, description="HuggingFace AutoTokenizer model name for chunking. If not set, uses embed_model_name.")

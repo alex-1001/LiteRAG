@@ -1,6 +1,8 @@
 import pytest
+from pathlib import Path
 from app.main import app, lifespan, get_client, get_config, get_embedder, get_vectorstore, get_lock, get_tokenizer
 from app.config import Settings
+from app.ingest import resolve_ingest_path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
@@ -26,6 +28,44 @@ class TestHealth:
         
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+
+class TestResolveIngestPath:
+    def test_defaults_to_data_root(self, tmp_path):
+        data_root = tmp_path / "data"
+        data_root.mkdir()
+
+        assert resolve_ingest_path(str(data_root)) == data_root.resolve()
+
+    def test_resolves_relative_source_path_inside_data_root(self, tmp_path):
+        data_root = tmp_path / "data"
+        docs = data_root / "docs"
+        docs.mkdir(parents=True)
+
+        assert resolve_ingest_path(str(data_root), "docs") == docs.resolve()
+
+    def test_rejects_absolute_source_path(self, tmp_path):
+        data_root = tmp_path / "data"
+        data_root.mkdir()
+
+        with pytest.raises(ValueError, match="relative to DATA_DIR"):
+            resolve_ingest_path(str(data_root), "/etc")
+
+    def test_rejects_parent_traversal_outside_data_root(self, tmp_path):
+        data_root = tmp_path / "data"
+        data_root.mkdir()
+
+        with pytest.raises(ValueError, match="inside DATA_DIR"):
+            resolve_ingest_path(str(data_root), "../secrets")
+
+    def test_rejects_symlink_escape_outside_data_root(self, tmp_path):
+        data_root = tmp_path / "data"
+        outside = tmp_path / "outside"
+        data_root.mkdir()
+        outside.mkdir()
+        (data_root / "linked").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="inside DATA_DIR"):
+            resolve_ingest_path(str(data_root), "linked")
 
 class TestIngest:
     @pytest.fixture
@@ -58,26 +98,26 @@ class TestIngest:
 
         return mocks
     
-    def test_ingest_requires_folder(self, ingest_app_context):
+    def test_ingest_requires_data_dir(self, ingest_app_context):
         ingest_mocks = ingest_app_context
         
         ingest_mocks.settings.data_dir = None
         response = ingest_mocks.test_app.post("/ingest", json={})
         
         assert response.status_code == 400
-        assert response.json()["detail"] == "folder_path required when DATA_DIR is not set"
+        assert response.json()["detail"] == "DATA_DIR must be set for ingest"
     
-    def test_ingest_uses_request_folder(self, ingest_app_context):
+    def test_ingest_uses_relative_source_path_under_data_dir(self, ingest_app_context):
         ingest_mocks = ingest_app_context
         chunk = _make_chunk("test chunk")
         
         with patch("app.main.ingest_folder") as mock_ingest_folder:
             mock_ingest_folder.return_value = [chunk]
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/request/data"})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "request/data"})
         
         assert response.status_code == 200
         mock_ingest_folder.assert_called_once_with(
-            "/request/data", 
+            Path("/default/data/request/data"), 
             ingest_mocks.tokenizer, 
             ingest_mocks.settings.chunk_size, 
             ingest_mocks.settings.chunk_overlap
@@ -93,11 +133,31 @@ class TestIngest:
 
         assert response.status_code == 200
         mock_ingest_folder.assert_called_once_with(
-            "/default/data",
+            Path("/default/data"),
             ingest_mocks.tokenizer,
             ingest_mocks.settings.chunk_size,
             ingest_mocks.settings.chunk_overlap,
         )
+
+    def test_ingest_rejects_absolute_source_path(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        response = ingest_mocks.test_app.post("/ingest", json={"source_path": "/request/data"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "source_path must be relative to DATA_DIR"
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+        ingest_mocks.vectorstore.add.assert_not_called()
+
+    def test_ingest_rejects_source_path_outside_data_dir(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        response = ingest_mocks.test_app.post("/ingest", json={"source_path": "../secrets"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "source_path must be inside DATA_DIR"
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+        ingest_mocks.vectorstore.add.assert_not_called()
     
     def test_ingest_embeds_chunks_and_saves_to_vectorstore(self, ingest_app_context):
         ingest_mocks = ingest_app_context
@@ -108,7 +168,7 @@ class TestIngest:
         
         with patch("app.main.ingest_folder") as mock_ingest_folder:
             mock_ingest_folder.return_value = chunks
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/default/test", "force_rebuild": False})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "test", "force_rebuild": False})
         
         assert response.status_code == 200
         ingest_mocks.embedder.embed_chunks.assert_called_once_with(chunks)
@@ -130,7 +190,7 @@ class TestIngest:
             mock_ingest_folder.return_value = chunks
             response = ingest_mocks.test_app.post(
                 "/ingest",
-                json={"folder_path": "/request/data", "force_rebuild": True},
+                json={"source_path": "request/data", "force_rebuild": True},
             )
 
         assert response.status_code == 200
@@ -148,7 +208,7 @@ class TestIngest:
 
         with patch("app.main.ingest_folder") as mock_ingest_folder:
             mock_ingest_folder.return_value = chunks
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/request/data"})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "request/data"})
 
         body = response.json()
 
@@ -163,12 +223,12 @@ class TestIngest:
 
         with patch(
             "app.main.ingest_folder",
-            side_effect=FileNotFoundError("Data directory /missing does not exist."),
+            side_effect=FileNotFoundError("Data directory /default/data/missing does not exist."),
         ):
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/missing"})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "missing"})
 
         assert response.status_code == 404
-        assert response.json()["detail"] == "Data directory /missing does not exist."
+        assert response.json()["detail"] == "Data directory /default/data/missing does not exist."
         ingest_mocks.embedder.embed_chunks.assert_not_called()
 
     def test_ingest_returns_400_when_path_is_not_directory(self, ingest_app_context):
@@ -176,19 +236,19 @@ class TestIngest:
 
         with patch(
             "app.main.ingest_folder",
-            side_effect=NotADirectoryError("Data directory /file.md is not a directory."),
+            side_effect=NotADirectoryError("Data directory /default/data/file.md is not a directory."),
         ):
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/file.md"})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "file.md"})
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "Data directory /file.md is not a directory."
+        assert response.json()["detail"] == "Data directory /default/data/file.md is not a directory."
         ingest_mocks.embedder.embed_chunks.assert_not_called()
 
     def test_ingest_returns_403_when_folder_permission_denied(self, ingest_app_context):
         ingest_mocks = ingest_app_context
 
         with patch("app.main.ingest_folder", side_effect=PermissionError("permission denied")):
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/private/data"})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "private/data"})
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied while reading the data folder"
@@ -198,7 +258,7 @@ class TestIngest:
         ingest_mocks = ingest_app_context
 
         with patch("app.main.ingest_folder", side_effect=Exception("tokenizer exploded")):
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/request/data"})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "request/data"})
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to ingest documents"
@@ -211,7 +271,7 @@ class TestIngest:
         ingest_mocks.vectorstore.save.side_effect = RuntimeError("save failed")
 
         with patch("app.main.ingest_folder", return_value=[chunk]):
-            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/request/data"})
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "request/data"})
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to save ingested documents"

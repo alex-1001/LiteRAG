@@ -3,13 +3,30 @@ Process a folder of documents into chunks (DocumentChunks)
 """
 # TODO: use dynamic chunk and overlap sizes based on document size
 from app.models import DocumentChunk
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Union, Optional
 from pathlib import Path
 from uuid import uuid5, NAMESPACE_DNS
 from transformers import PreTrainedTokenizerBase
 
 
-def _validate_data_dir(data_dir: str) -> Path:
+def resolve_ingest_path(data_root: str, requested_path: Optional[str] = None) -> Path:
+    """Resolve an ingest request path inside the configured DATA_DIR sandbox."""
+    root = Path(data_root).expanduser().resolve()
+    requested = Path(requested_path or ".")
+
+    if requested.is_absolute():
+        raise ValueError("source_path must be relative to DATA_DIR")
+
+    target = (root / requested).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as e:
+        raise ValueError("source_path must be inside DATA_DIR") from e
+
+    return target
+
+
+def _validate_data_dir(data_dir: Union[str, Path]) -> Path:
     """Validate and return Path object for data directory."""
     data_dir = Path(data_dir)
     if not data_dir.exists():
@@ -33,7 +50,7 @@ def normalize_whitespace(text: str) -> str:
     text = text.strip()
     return text
 
-def load_text_documents(data_dir: str) -> List[Tuple[Path, str]]:
+def load_text_documents(data_dir: Union[str, Path]) -> List[Tuple[Path, str]]:
     """
     Load all text documents (.txt/.md) from the data directory.
     Returns a list of tuples containing (document Path, content).
@@ -111,7 +128,7 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int, tokenizer: PreTra
     return chunks
 
 def ingest_folder(
-    data_dir: str,
+    data_dir: Union[str, Path],
     tokenizer: PreTrainedTokenizerBase,
     chunk_size: int,
     chunk_overlap: int,

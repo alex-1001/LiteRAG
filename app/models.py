@@ -29,9 +29,9 @@ class Source(BaseModel):
 class IngestRequest(BaseModel):
     """
     Request to ingest a folder of documents (.txt/.md) into vector database.
-    Will default to DATA_DIR environment variable if not provided.
+    Defaults to ingesting the configured DATA_DIR when source_path is not provided.
     """
-    folder_path: Optional[str] = Field(None, description="Path to folder containing documents to ingest.")
+    source_path: Optional[str] = Field(None, description="Optional relative path under DATA_DIR to ingest. Ingests all of DATA_DIR if omitted.")
     force_rebuild: bool = Field(False, description="Whether to rebuild the vector database from scratch.")
     
 class IngestResponse(BaseModel):

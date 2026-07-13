@@ -8,7 +8,7 @@ from app.models import QueryRequest, QueryResponse, IngestRequest, IngestRespons
 from app.config import load_settings, Settings
 from app.embed import Embedder
 from app.vectorstore import VectorStore
-from app.ingest import ingest_folder
+from app.ingest import ingest_folder, resolve_ingest_path
 from app.retrieve import retrieve_chunks
 from app.rag import answer_query
 from contextlib import asynccontextmanager
@@ -88,12 +88,16 @@ def ingest(
 ) -> IngestResponse:
     start = time.perf_counter()
     
-    folder_path = req.folder_path or config.data_dir
-    if not folder_path:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="folder_path required when DATA_DIR is not set")
+    if not config.data_dir:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="DATA_DIR must be set for ingest")
+
+    try:
+        source_path = resolve_ingest_path(config.data_dir, req.source_path)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     
     try:
-        chunks = ingest_folder(folder_path, tokenizer, config.chunk_size, config.chunk_overlap)
+        chunks = ingest_folder(source_path, tokenizer, config.chunk_size, config.chunk_overlap)
         vectors = embedder.embed_chunks(chunks)
     except FileNotFoundError as e:
         raise HTTPException(
