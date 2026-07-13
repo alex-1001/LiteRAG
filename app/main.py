@@ -1,5 +1,5 @@
 """wires together modules and exposes endpoints of API"""
-from fastapi import FastAPI, Depends, Request, HTTPException
+from fastapi import FastAPI, Depends, Request, HTTPException, status
 import time
 from typing import Dict
 from transformers import AutoTokenizer
@@ -90,19 +90,47 @@ def ingest(
     
     folder_path = req.folder_path or config.data_dir
     if not folder_path:
-        raise HTTPException(status_code=400, detail="folder_path required when DATA_DIR is not set")
-    #TODO: add more error handling
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="folder_path required when DATA_DIR is not set")
     
-    chunks = ingest_folder(folder_path, tokenizer, config.chunk_size, config.chunk_overlap)
-    vectors = embedder.embed_chunks(chunks)
+    try:
+        chunks = ingest_folder(folder_path, tokenizer, config.chunk_size, config.chunk_overlap)
+        vectors = embedder.embed_chunks(chunks)
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from e
+    except NotADirectoryError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied while reading the data folder",
+        ) from e
+    except Exception as e:
+        logging.exception("Unexpected ingest failure.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to ingest documents",
+        ) from e
     
-    with lock:
-        if req.force_rebuild:
-            vectorstore.clear()
-            vectorstore.create()
-        
-        vectorstore.add(vectors, chunks)
-        vectorstore.save()
+    try:
+        with lock:
+            if req.force_rebuild:
+                vectorstore.clear()
+                vectorstore.create()
+            
+            vectorstore.add(vectors, chunks)
+            vectorstore.save()
+    except Exception as e:
+        logging.exception("Failed to update vectorstore during ingest")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save ingested documents",
+        ) from e
         
     doc_ids = list({c.document_id for c in chunks})
     elapsed = time.perf_counter() - start
@@ -124,20 +152,46 @@ def query(
 ) -> QueryResponse:
     top_k = req.top_k or config.top_k
     
-    chunks, distances = retrieve_chunks(
-        req.question,
-        vectorstore,
-        embedder,
-        top_k=top_k,
-    )
+    try:
+        chunks, distances = retrieve_chunks(
+            req.question,
+            vectorstore,
+            embedder,
+            top_k=top_k,
+        )
+    except RuntimeError as e:
+        logging.exception("Vectorstore runtime failure")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search index is not ready"
+        ) from e
+    except Exception as e:
+        logging.exception("Unexpected retrieval failure")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve relevant documents",
+        ) from e
 
-    answer, cited_ids = answer_query(
-        req.question,
-        chunks,
-        client=client,
-        llm_model=config.openrouter_model
-    )
-    
+    try:
+        answer, cited_ids = answer_query(
+            req.question,
+            chunks,
+            client=client,
+            llm_model=config.openrouter_model
+        )
+    except (ValueError, TypeError) as e:
+        logging.exception("LLM returned an invalid response")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="LLM returned an invalid response",
+        ) from e
+    except Exception as e:
+        logging.exception("Unexpected query failure")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to generate answer",
+        ) from e
+            
     # chunks actually cited in answer
     sources = []
     for cid in cited_ids:

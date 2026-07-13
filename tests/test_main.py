@@ -158,6 +158,66 @@ class TestIngest:
         assert set(body["document_ids"]) == {str(chunk_a.document_id)}
         assert body["processing_time_seconds"] >= 0
 
+    def test_ingest_returns_404_when_folder_missing(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        with patch(
+            "app.main.ingest_folder",
+            side_effect=FileNotFoundError("Data directory /missing does not exist."),
+        ):
+            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/missing"})
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Data directory /missing does not exist."
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+
+    def test_ingest_returns_400_when_path_is_not_directory(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        with patch(
+            "app.main.ingest_folder",
+            side_effect=NotADirectoryError("Data directory /file.md is not a directory."),
+        ):
+            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/file.md"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Data directory /file.md is not a directory."
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+
+    def test_ingest_returns_403_when_folder_permission_denied(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        with patch("app.main.ingest_folder", side_effect=PermissionError("permission denied")):
+            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/private/data"})
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied while reading the data folder"
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+
+    def test_ingest_returns_500_when_processing_fails(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        with patch("app.main.ingest_folder", side_effect=Exception("tokenizer exploded")):
+            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/request/data"})
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to ingest documents"
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+
+    def test_ingest_returns_500_when_vectorstore_update_fails(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+        chunk = _make_chunk("test chunk")
+        ingest_mocks.embedder.embed_chunks.return_value = Mock()
+        ingest_mocks.vectorstore.save.side_effect = RuntimeError("save failed")
+
+        with patch("app.main.ingest_folder", return_value=[chunk]):
+            response = ingest_mocks.test_app.post("/ingest", json={"folder_path": "/request/data"})
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to save ingested documents"
+        ingest_mocks.vectorstore.add.assert_called_once()
+        ingest_mocks.vectorstore.save.assert_called_once()
+
 class TestQuery:
     @pytest.fixture
     def query_app_context(self, main_app_overrides):
@@ -282,6 +342,53 @@ class TestQuery:
         response = query_app_context.test_app.post("/query", json=payload)
 
         assert response.status_code == 422
+
+    def test_query_returns_503_when_search_index_is_not_ready(self, query_app_context):
+        query_mocks = query_app_context
+
+        with patch("app.main.retrieve_chunks", side_effect=RuntimeError("index not initialized")):
+            response = query_mocks.test_app.post("/query", json={"question": "What is this?"})
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Search index is not ready"
+
+    def test_query_returns_500_when_retrieval_fails_unexpectedly(self, query_app_context):
+        query_mocks = query_app_context
+
+        with patch("app.main.retrieve_chunks", side_effect=Exception("embedding backend failed")):
+            response = query_mocks.test_app.post("/query", json={"question": "What is this?"})
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to retrieve relevant documents"
+
+    @pytest.mark.parametrize("llm_error", [ValueError("invalid json"), TypeError("bad citations")])
+    def test_query_returns_502_when_llm_response_is_invalid(self, query_app_context, llm_error):
+        query_mocks = query_app_context
+
+        with (
+            patch("app.main.retrieve_chunks") as mock_retrieve,
+            patch("app.main.answer_query", side_effect=llm_error),
+        ):
+            mock_retrieve.return_value = ([_make_chunk("retrieved text")], [0.25])
+
+            response = query_mocks.test_app.post("/query", json={"question": "What is this?"})
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "LLM returned an invalid response"
+
+    def test_query_returns_502_when_answer_generation_fails_unexpectedly(self, query_app_context):
+        query_mocks = query_app_context
+
+        with (
+            patch("app.main.retrieve_chunks") as mock_retrieve,
+            patch("app.main.answer_query", side_effect=Exception("llm unavailable")),
+        ):
+            mock_retrieve.return_value = ([_make_chunk("retrieved text")], [0.25])
+
+            response = query_mocks.test_app.post("/query", json={"question": "What is this?"})
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "Failed to generate answer"
 
 class TestLifespan:
     @pytest.fixture

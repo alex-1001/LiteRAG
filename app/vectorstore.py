@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 import warnings
 
+# TODO: could add more specific VectorStoreNotInitializedError
+
 class VectorStore:
     """Wrapper class that couples vector index to metadata database; supports vector storage and search"""
     def __init__(self, dim: int, storage_dir: str, embed_model_name: Optional[str] = None, initial_max_elements: int = 10000):
