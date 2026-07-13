@@ -327,6 +327,7 @@ class TestQuery:
             embedder=Mock(),
             client=Mock(),
             vectorstore=Mock(),
+            lock=Lock(),
             test_app=TestClient(app),
         )
         
@@ -334,6 +335,7 @@ class TestQuery:
         main_app_overrides[get_embedder] = lambda: mocks.embedder
         main_app_overrides[get_client] = lambda: mocks.client
         main_app_overrides[get_vectorstore] = lambda: mocks.vectorstore
+        main_app_overrides[get_lock] = lambda: mocks.lock
         
         return mocks
     
@@ -370,6 +372,22 @@ class TestQuery:
             query_mocks.embedder,
             top_k=5,
         )
+
+    def test_query_retrieves_chunks_under_lock(self, query_app_context):
+        query_mocks = query_app_context
+        chunks = [_make_chunk("retrieved text")]
+
+        def retrieve_while_locked(*args, **kwargs):
+            assert query_mocks.lock.locked()
+            return chunks, [0.25]
+
+        with patch("app.main.retrieve_chunks", side_effect=retrieve_while_locked), patch("app.main.answer_query") as mock_answer:
+            mock_answer.return_value = ("Answer", [1])
+
+            response = query_mocks.test_app.post("/query", json={"question": "What is this?"})
+
+        assert response.status_code == 200
+        assert not query_mocks.lock.locked()
 
     def test_query_calls_answer_query_with_client_and_model(self, query_app_context):
         query_mocks = query_app_context

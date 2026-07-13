@@ -161,16 +161,18 @@ def query(
     embedder: Embedder = Depends(get_embedder),
     client: OpenAI = Depends(get_client),
     vectorstore: VectorStore = Depends(get_vectorstore),
+    lock: Lock = Depends(get_lock),
 ) -> QueryResponse:
     top_k = req.top_k or config.top_k
     
     try:
-        chunks, distances = retrieve_chunks(
-            req.question,
-            vectorstore,
-            embedder,
-            top_k=top_k,
-        )
+        with lock:
+            chunks, distances = retrieve_chunks(
+                req.question,
+                vectorstore,
+                embedder,
+                top_k=top_k,
+            )
     except RuntimeError as e:
         logging.exception("Vectorstore runtime failure")
         raise HTTPException(
