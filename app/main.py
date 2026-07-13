@@ -95,6 +95,18 @@ def ingest(
     
     try:
         chunks = ingest_folder(source_path, tokenizer, config.chunk_size, config.chunk_overlap)
+        if not chunks:
+                if req.force_rebuild:
+                    vectorstore.clear()
+                    vectorstore.create()
+                
+                return IngestResponse(
+                    documents_processed=0,
+                    chunks_created=0,
+                    document_ids=[],
+                    processing_time_seconds=time.perf_counter() - start,
+                )
+            
         vectors = embedder.embed_chunks(chunks)
     except FileNotFoundError as e:
         raise HTTPException(
@@ -134,13 +146,12 @@ def ingest(
         ) from e
         
     doc_ids = list({c.document_id for c in chunks})
-    elapsed = time.perf_counter() - start
     
     return IngestResponse(
         documents_processed=len(doc_ids),
         chunks_created=len(chunks),
         document_ids=doc_ids,
-        processing_time_seconds=elapsed,
+        processing_time_seconds=time.perf_counter() - start,
     )
 
 @app.post("/query")

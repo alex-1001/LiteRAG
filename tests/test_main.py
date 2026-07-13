@@ -190,6 +190,47 @@ class TestIngest:
         ingest_mocks.vectorstore.add.assert_called_once_with(vectors, chunks)
         ingest_mocks.vectorstore.save.assert_called_once()
 
+    def test_ingest_empty_chunks_returns_zero_response_without_embedding(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        with patch("app.main.ingest_folder", return_value=[]):
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "empty"})
+
+        body = response.json()
+
+        assert response.status_code == 200
+        assert body["documents_processed"] == 0
+        assert body["chunks_created"] == 0
+        assert body["document_ids"] == []
+        assert body["processing_time_seconds"] >= 0
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+        ingest_mocks.vectorstore.clear.assert_not_called()
+        ingest_mocks.vectorstore.create.assert_not_called()
+        ingest_mocks.vectorstore.add.assert_not_called()
+        ingest_mocks.vectorstore.save.assert_not_called()
+
+    def test_ingest_empty_chunks_with_force_rebuild_resets_vectorstore_without_embedding(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+
+        with patch("app.main.ingest_folder", return_value=[]):
+            response = ingest_mocks.test_app.post(
+                "/ingest",
+                json={"source_path": "empty", "force_rebuild": True},
+            )
+
+        body = response.json()
+
+        assert response.status_code == 200
+        assert body["documents_processed"] == 0
+        assert body["chunks_created"] == 0
+        assert body["document_ids"] == []
+        assert body["processing_time_seconds"] >= 0
+        ingest_mocks.embedder.embed_chunks.assert_not_called()
+        ingest_mocks.vectorstore.clear.assert_called_once()
+        ingest_mocks.vectorstore.create.assert_called_once()
+        ingest_mocks.vectorstore.add.assert_not_called()
+        ingest_mocks.vectorstore.save.assert_not_called()
+
     def test_ingest_response_reports_documents_chunks_and_ids(self, ingest_app_context):
         ingest_mocks = ingest_app_context
         chunk_a = _make_chunk("chunk A", "doc.md", "0")
