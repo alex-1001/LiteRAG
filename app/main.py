@@ -88,9 +88,6 @@ def ingest(
 ) -> IngestResponse:
     start = time.perf_counter()
     
-    if not config.data_dir:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="DATA_DIR must be set for ingest")
-
     try:
         source_path = resolve_ingest_path(config.data_dir, req.source_path)
     except ValueError as e:

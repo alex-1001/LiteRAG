@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     )
 
     # Root folder for document ingest. Requests can only select paths inside this directory.
-    data_dir: Optional[str] = Field(default=None, description="Root folder that bounds document ingest.")
+    data_dir: str = Field(..., description="Root folder that bounds document ingest.")
 
     # Chunking (ingest)
     tokenizer_name: Optional[str] = Field(default=None, description="HuggingFace AutoTokenizer model name for chunking. If not set, uses embed_model_name.")

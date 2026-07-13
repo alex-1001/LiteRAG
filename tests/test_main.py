@@ -98,15 +98,6 @@ class TestIngest:
 
         return mocks
     
-    def test_ingest_requires_data_dir(self, ingest_app_context):
-        ingest_mocks = ingest_app_context
-        
-        ingest_mocks.settings.data_dir = None
-        response = ingest_mocks.test_app.post("/ingest", json={})
-        
-        assert response.status_code == 400
-        assert response.json()["detail"] == "DATA_DIR must be set for ingest"
-    
     def test_ingest_uses_relative_source_path_under_data_dir(self, ingest_app_context):
         ingest_mocks = ingest_app_context
         chunk = _make_chunk("test chunk")
@@ -286,6 +277,7 @@ class TestQuery:
             openrouter_base_url="https://example.com",
             openrouter_api_key="test-key",
             openrouter_model="test-llm",
+            data_dir="/default/data",
             top_k=5,
         )
         
@@ -457,6 +449,7 @@ class TestLifespan:
             embed_model_name="test-embed",
             tokenizer_name="test-tokenizer",
             storage_dir="/tmp/vectorstore",
+            data_dir="/default/data",
             openrouter_base_url="https://example.com",
             openrouter_api_key="test-key",
             openrouter_model="test-llm",
@@ -466,6 +459,7 @@ class TestLifespan:
     async def test_lifespan_requires_openrouter_settings(self):
         settings = Settings(
             embed_model_name="test-embed",
+            data_dir="/default/data",
             openrouter_base_url=None,
             openrouter_api_key="test-key",
             openrouter_model="test-llm",
