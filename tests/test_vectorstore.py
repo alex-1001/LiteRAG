@@ -530,12 +530,40 @@ class TestVectorStoreSaveLoad:
         ids, _, _ = loaded.search(vectors[0], top_k=3)
         assert len(ids) == 3
 
-    def test_load_or_create_creates_when_any_file_missing(self, vectorstore_path: Path):
+    def test_load_or_create_creates_when_all_files_missing(self, vectorstore_path: Path):
         # No save: all three files are missing, so load_or_create runs create()
         loaded = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
         loaded.load_or_create()
         assert loaded.is_initialized()
         assert len(loaded) == 0
+
+    @pytest.mark.parametrize(
+        "existing_files, missing_files",
+        [
+            (["index.bin"], ["index_metadata.json", "metadata.jsonl"]),
+            (["metadata.jsonl"], ["index.bin", "index_metadata.json"]),
+            (["index_metadata.json"], ["index.bin", "metadata.jsonl"]),
+            (["index.bin", "metadata.jsonl"], ["index_metadata.json"]),
+            (["index.bin", "index_metadata.json"], ["metadata.jsonl"]),
+            (["metadata.jsonl", "index_metadata.json"], ["index.bin"]),
+        ],
+    )
+    def test_load_or_create_raises_when_vectorstore_files_are_partial(
+        self,
+        vectorstore_path: Path,
+        existing_files: List[str],
+        missing_files: List[str],
+    ):
+        for filename in existing_files:
+            (vectorstore_path / filename).touch()
+
+        loaded = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+
+        with pytest.raises(FileNotFoundError, match="Partial vectorstore state") as exc:
+            loaded.load_or_create()
+
+        assert str(sorted(missing_files)) in str(exc.value)
+        assert not loaded.is_initialized()
 
 class TestVectorStoreUtilities:
     """Test suite for VectorStore utility functions"""

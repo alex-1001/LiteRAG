@@ -163,12 +163,19 @@ class VectorStore:
         metadata_path = self.storage_dir / "metadata.jsonl"
         index_metadata_path = self.storage_dir / "index_metadata.json"
 
-        # If any are missing, initialize a new index and metadata
-        if (index_path.exists() and metadata_path.exists() and index_metadata_path.exists()):
+        required = {index_path, metadata_path, index_metadata_path}
+        exists = {path for path in required if path.exists()}
+        missing = required - exists
+        
+        if not exists:
+            self.create()
+        elif not missing:
             self.load()
         else:
-            self.create()
-
+            missing_names = sorted(path.name for path in missing)
+            raise FileNotFoundError(
+                f"Partial vectorstore state in {self.storage_dir}; missing files: {missing_names}"
+            )
 
     def add(self, vectors: NDArray[np.float32], chunks: List[DocumentChunk]) -> List[int]:
         """adds vectors (N, dim) or single vector (dim,) to index and updates metadata database. expands index if necessary.
