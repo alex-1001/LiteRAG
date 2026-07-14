@@ -221,7 +221,7 @@ class TestIngest:
         ingest_mocks.vectorstore.add_idempotent.assert_not_called()
         ingest_mocks.vectorstore.save.assert_not_called()
 
-    def test_ingest_empty_chunks_with_force_rebuild_resets_vectorstore_without_embedding(self, ingest_app_context):
+    def test_ingest_empty_chunks_with_force_rebuild_resets_and_saves_vectorstore_without_embedding(self, ingest_app_context):
         ingest_mocks = ingest_app_context
 
         with patch("app.main.ingest_folder", return_value=[]):
@@ -241,7 +241,7 @@ class TestIngest:
         ingest_mocks.vectorstore.clear.assert_called_once()
         ingest_mocks.vectorstore.create.assert_called_once()
         ingest_mocks.vectorstore.add_idempotent.assert_not_called()
-        ingest_mocks.vectorstore.save.assert_not_called()
+        ingest_mocks.vectorstore.save.assert_called_once()
 
     def test_ingest_response_reports_documents_chunks_and_ids(self, ingest_app_context):
         ingest_mocks = ingest_app_context
