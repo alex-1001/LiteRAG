@@ -35,6 +35,14 @@ def _validate_data_dir(data_dir: Union[str, Path]) -> Path:
         raise NotADirectoryError(f"Data directory {data_dir} is not a directory.")
     return data_dir
 
+def _document_identity_path(doc_path: Path, document_root: Path) -> str:
+    """Return the stable, case-sensitive DATA_DIR-relative path used to derive document IDs."""
+    try:
+        relative_path = doc_path.resolve().relative_to(document_root)
+    except ValueError as e:
+        raise ValueError(f"Document path {doc_path} is outside document_root {document_root}") from e
+    return relative_path.as_posix()
+
 def normalize_whitespace(text: str) -> str:
     """
     Normalize whitespaces in a text string. 
@@ -132,20 +140,30 @@ def ingest_folder(
     tokenizer: PreTrainedTokenizerBase,
     chunk_size: int,
     chunk_overlap: int,
+    document_root: Optional[Union[str, Path]] = None,
 ) -> List[DocumentChunk]:
     """
-    Processes the folder of documents into chunks.
+    Processes a folder of documents into chunks.
     Returns a list of DocumentChunks.
+    Document IDs are derived from paths relative to document_root, which should
+    usually be the configured DATA_DIR. If document_root is omitted, data_dir is
+    used as the root.
     chunk_size and chunk_overlap are in tokens (passed from config).
     """
-    data_dir = _validate_data_dir(data_dir)
+    data_dir = _validate_data_dir(data_dir).resolve()
+    document_root = _validate_data_dir(document_root or data_dir).resolve()
+    try:
+        data_dir.relative_to(document_root)
+    except ValueError as e:
+        raise ValueError(f"Data directory {data_dir} is outside document_root {document_root}") from e
     
     document_chunks = []
     
     documents = load_text_documents(data_dir)
     for doc_path, text in documents:
         document_name = doc_path.name
-        document_id = uuid5(NAMESPACE_DNS, doc_path.as_posix().lower())
+        identity_path = _document_identity_path(doc_path, document_root)
+        document_id = uuid5(NAMESPACE_DNS, identity_path)
         chunks = chunk_text(text, chunk_size, chunk_overlap, tokenizer)
         for i, (text_chunk, metadata) in enumerate(chunks):
             chunk_id = f"{str(document_id)}-{i}"

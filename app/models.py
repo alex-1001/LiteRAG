@@ -9,7 +9,7 @@ class DocumentChunk(BaseModel):
     """
     Atomic unit of RAG retrieval
     """
-    document_id: UUID = Field(..., description="Unique, stable identifier of document that a chunk originates from.")
+    document_id: UUID = Field(..., description="Unique, stable identifier derived from the document path relative to DATA_DIR.")
     document_name: str = Field(..., description="Human-readable name of document.")
     chunk_id: str = Field(..., description="Unique identifier for a chunk within its document.")
     text: str = Field(..., description="Raw text from document, used for retrieval and augmentation.", min_length=1)
@@ -21,7 +21,7 @@ class Source(BaseModel):
     A citation-object for information used in RAG.
     """
     document_name: str = Field(..., description="Human-readable name of document.")
-    document_id: UUID = Field(..., description="Unique, stable identifier of document that a chunk originates from.")
+    document_id: UUID = Field(..., description="Unique, stable identifier derived from the document path relative to DATA_DIR.")
     chunk_id: str = Field(..., description="Unique identifier for a chunk within its document.")
     snippet: str = Field(..., description="An excerpt of the chunk.", min_length=1)
     cosine_similarity: float = Field(..., description="Cosine similarity between the query and the chunk.", ge=-1.0, le=1.0)
@@ -40,7 +40,7 @@ class IngestResponse(BaseModel):
     """
     documents_processed: int = Field(..., description="Number of documents processed.", ge=0)
     chunks_created: int = Field(..., description="Number of chunks added to index.", ge=0)
-    document_ids: List[UUID] = Field(..., description="List of unique identifiers for each document processed.")
+    document_ids: List[UUID] = Field(..., description="List of DATA_DIR-relative document identifiers processed.")
     processing_time_seconds: float = Field(..., description="Time taken to process the documents.", ge=0.0)
     
 class QueryRequest(BaseModel):

@@ -94,20 +94,26 @@ def ingest(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     
     try:
-        chunks = ingest_folder(source_path, tokenizer, config.chunk_size, config.chunk_overlap)
+        chunks = ingest_folder(
+            source_path,
+            tokenizer,
+            config.chunk_size,
+            config.chunk_overlap,
+            document_root=config.data_dir,
+        )
         if not chunks:
-                if req.force_rebuild:
-                    with lock: 
-                        vectorstore.clear()
-                        vectorstore.create()
-                        vectorstore.save()
-                
-                return IngestResponse(
-                    documents_processed=0,
-                    chunks_created=0,
-                    document_ids=[],
-                    processing_time_seconds=time.perf_counter() - start,
-                )
+            if req.force_rebuild:
+                with lock:
+                    vectorstore.clear()
+                    vectorstore.create()
+                    vectorstore.save()
+
+            return IngestResponse(
+                documents_processed=0,
+                chunks_created=0,
+                document_ids=[],
+                processing_time_seconds=time.perf_counter() - start,
+            )
             
         vectors = embedder.embed_chunks(chunks)
     except FileNotFoundError as e:

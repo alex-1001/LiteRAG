@@ -1,9 +1,9 @@
 import pytest
 from typing import List
-from app.ingest import normalize_whitespace, load_text_documents, chunk_text, ingest_folder
+from app.ingest import _document_identity_path, normalize_whitespace, load_text_documents, chunk_text, ingest_folder
 from app.models import DocumentChunk
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, NAMESPACE_DNS, uuid5
 
 class TestNormalizeWhitespace:
     """Test suite for normalize_whitespace()"""
@@ -234,6 +234,95 @@ class TestIngestFolder:
         
         # Same documents should have same IDs
         assert doc_ids1 == doc_ids2
+
+    def test_document_id_uses_path_relative_to_document_root(self, tmp_path, mock_tokenizer):
+        """document_id is derived from the DATA_DIR-relative path, not the selected source folder."""
+        data_root = tmp_path / "data"
+        docs_dir = data_root / "docs"
+        docs_dir.mkdir(parents=True)
+        (docs_dir / "faq.md").write_text("FAQ content")
+
+        chunks = ingest_folder(
+            docs_dir,
+            mock_tokenizer,
+            chunk_size=200,
+            chunk_overlap=50,
+            document_root=data_root,
+        )
+
+        assert {chunk.document_id for chunk in chunks} == {
+            uuid5(NAMESPACE_DNS, "docs/faq.md")
+        }
+
+    def test_document_id_independent_of_absolute_document_root(self, tmp_path, mock_tokenizer):
+        """same relative path under different absolute roots gets the same document_id."""
+        ids = []
+        for root_name in ["root_a", "root_b"]:
+            data_root = tmp_path / root_name
+            docs_dir = data_root / "docs"
+            docs_dir.mkdir(parents=True)
+            (docs_dir / "faq.md").write_text("FAQ content")
+
+            chunks = ingest_folder(
+                data_root,
+                mock_tokenizer,
+                chunk_size=200,
+                chunk_overlap=50,
+                document_root=data_root,
+            )
+            ids.append({chunk.document_name: chunk.document_id for chunk in chunks}["faq.md"])
+
+        assert ids[0] == ids[1] == uuid5(NAMESPACE_DNS, "docs/faq.md")
+
+    def test_document_id_keeps_different_relative_paths_distinct(self, tmp_path, mock_tokenizer):
+        """same filename in different DATA_DIR-relative folders remains distinct."""
+        data_root = tmp_path / "data"
+        (data_root / "team_a").mkdir(parents=True)
+        (data_root / "team_b").mkdir(parents=True)
+        (data_root / "team_a" / "faq.md").write_text("Team A FAQ")
+        (data_root / "team_b" / "faq.md").write_text("Team B FAQ")
+
+        chunks = ingest_folder(
+            data_root,
+            mock_tokenizer,
+            chunk_size=200,
+            chunk_overlap=50,
+            document_root=data_root,
+        )
+        ids_by_text = {chunk.text: chunk.document_id for chunk in chunks}
+
+        assert ids_by_text["Team A FAQ"] == uuid5(NAMESPACE_DNS, "team_a/faq.md")
+        assert ids_by_text["Team B FAQ"] == uuid5(NAMESPACE_DNS, "team_b/faq.md")
+        assert ids_by_text["Team A FAQ"] != ids_by_text["Team B FAQ"]
+
+    def test_document_identity_path_preserves_relative_path_case(self, tmp_path):
+        """relative paths that differ only by case get different document IDs."""
+        data_root = tmp_path / "data"
+        data_root.mkdir()
+
+        upper_identity = _document_identity_path(data_root / "docs" / "FAQ.md", data_root)
+        lower_identity = _document_identity_path(data_root / "docs" / "faq.md", data_root)
+
+        assert upper_identity == "docs/FAQ.md"
+        assert lower_identity == "docs/faq.md"
+        assert uuid5(NAMESPACE_DNS, upper_identity) != uuid5(NAMESPACE_DNS, lower_identity)
+
+    def test_ingest_folder_rejects_data_dir_outside_document_root(self, tmp_path, mock_tokenizer):
+        """document_root bounds identity generation the same way DATA_DIR bounds endpoint ingest."""
+        data_root = tmp_path / "data"
+        outside = tmp_path / "outside"
+        data_root.mkdir()
+        outside.mkdir()
+        (outside / "faq.md").write_text("FAQ content")
+
+        with pytest.raises(ValueError, match="outside document_root"):
+            ingest_folder(
+                outside,
+                mock_tokenizer,
+                chunk_size=200,
+                chunk_overlap=50,
+                document_root=data_root,
+            )
     
     def test_chunk_id_format(self, temp_doc_dir, mock_tokenizer):
         """chunk_id follows expected format: {document_id}-{index}"""

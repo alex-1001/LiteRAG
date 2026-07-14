@@ -121,7 +121,8 @@ class TestIngest:
             Path("/default/data/request/data"), 
             ingest_mocks.tokenizer, 
             ingest_mocks.settings.chunk_size, 
-            ingest_mocks.settings.chunk_overlap
+            ingest_mocks.settings.chunk_overlap,
+            document_root="/default/data",
         )
 
     def test_ingest_defaults_to_config_data_dir(self, ingest_app_context):
@@ -138,6 +139,7 @@ class TestIngest:
             ingest_mocks.tokenizer,
             ingest_mocks.settings.chunk_size,
             ingest_mocks.settings.chunk_overlap,
+            document_root="/default/data",
         )
 
     def test_ingest_rejects_absolute_source_path(self, ingest_app_context):
