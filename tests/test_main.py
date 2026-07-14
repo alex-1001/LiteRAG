@@ -3,6 +3,7 @@ from pathlib import Path
 from app.main import app, lifespan, get_client, get_config, get_embedder, get_vectorstore, get_lock, get_tokenizer
 from app.config import Settings
 from app.ingest import resolve_ingest_path
+from app.vectorstore import AddChunksResult, ChunkConflictError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
@@ -19,6 +20,14 @@ def main_app_overrides():
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+def _make_add_result(chunks_added: int = 1, chunks_skipped: int = 0) -> AddChunksResult:
+    return AddChunksResult(
+        vector_ids=list(range(chunks_added)),
+        chunks_added=chunks_added,
+        chunks_skipped=chunks_skipped,
+        skipped_chunk_ids=[f"skipped-{i}" for i in range(chunks_skipped)],
+    )
 
 class TestHealth:
     def test_health_returns_ok(self):
@@ -88,6 +97,7 @@ class TestIngest:
             lock=Lock(),
             test_app=TestClient(app),
         )
+        mocks.vectorstore.add_idempotent.return_value = _make_add_result()
 
         # note the below mutates app object from main_app_overrides()
         main_app_overrides[get_config] = lambda: mocks.settings
@@ -138,7 +148,7 @@ class TestIngest:
         assert response.status_code == 400
         assert response.json()["detail"] == "source_path must be relative to DATA_DIR"
         ingest_mocks.embedder.embed_chunks.assert_not_called()
-        ingest_mocks.vectorstore.add.assert_not_called()
+        ingest_mocks.vectorstore.add_idempotent.assert_not_called()
 
     def test_ingest_rejects_source_path_outside_data_dir(self, ingest_app_context):
         ingest_mocks = ingest_app_context
@@ -148,7 +158,7 @@ class TestIngest:
         assert response.status_code == 400
         assert response.json()["detail"] == "source_path must be inside DATA_DIR"
         ingest_mocks.embedder.embed_chunks.assert_not_called()
-        ingest_mocks.vectorstore.add.assert_not_called()
+        ingest_mocks.vectorstore.add_idempotent.assert_not_called()
     
     def test_ingest_embeds_chunks_and_saves_to_vectorstore(self, ingest_app_context):
         ingest_mocks = ingest_app_context
@@ -156,6 +166,7 @@ class TestIngest:
         
         vectors = Mock()
         ingest_mocks.embedder.embed_chunks.return_value = vectors
+        ingest_mocks.vectorstore.add_idempotent.return_value = _make_add_result(chunks_added=2)
         
         with patch("app.main.ingest_folder") as mock_ingest_folder:
             mock_ingest_folder.return_value = chunks
@@ -163,7 +174,7 @@ class TestIngest:
         
         assert response.status_code == 200
         ingest_mocks.embedder.embed_chunks.assert_called_once_with(chunks)
-        ingest_mocks.vectorstore.add.assert_called_once_with(
+        ingest_mocks.vectorstore.add_idempotent.assert_called_once_with(
             vectors,
             chunks,
         )
@@ -176,6 +187,7 @@ class TestIngest:
         chunks = [_make_chunk("chunk text")]
         vectors = Mock()
         ingest_mocks.embedder.embed_chunks.return_value = vectors
+        ingest_mocks.vectorstore.add_idempotent.return_value = _make_add_result(chunks_added=1)
 
         with patch("app.main.ingest_folder") as mock_ingest_folder:
             mock_ingest_folder.return_value = chunks
@@ -187,7 +199,7 @@ class TestIngest:
         assert response.status_code == 200
         ingest_mocks.vectorstore.clear.assert_called_once()
         ingest_mocks.vectorstore.create.assert_called_once()
-        ingest_mocks.vectorstore.add.assert_called_once_with(vectors, chunks)
+        ingest_mocks.vectorstore.add_idempotent.assert_called_once_with(vectors, chunks)
         ingest_mocks.vectorstore.save.assert_called_once()
 
     def test_ingest_empty_chunks_returns_zero_response_without_embedding(self, ingest_app_context):
@@ -206,7 +218,7 @@ class TestIngest:
         ingest_mocks.embedder.embed_chunks.assert_not_called()
         ingest_mocks.vectorstore.clear.assert_not_called()
         ingest_mocks.vectorstore.create.assert_not_called()
-        ingest_mocks.vectorstore.add.assert_not_called()
+        ingest_mocks.vectorstore.add_idempotent.assert_not_called()
         ingest_mocks.vectorstore.save.assert_not_called()
 
     def test_ingest_empty_chunks_with_force_rebuild_resets_vectorstore_without_embedding(self, ingest_app_context):
@@ -228,7 +240,7 @@ class TestIngest:
         ingest_mocks.embedder.embed_chunks.assert_not_called()
         ingest_mocks.vectorstore.clear.assert_called_once()
         ingest_mocks.vectorstore.create.assert_called_once()
-        ingest_mocks.vectorstore.add.assert_not_called()
+        ingest_mocks.vectorstore.add_idempotent.assert_not_called()
         ingest_mocks.vectorstore.save.assert_not_called()
 
     def test_ingest_response_reports_documents_chunks_and_ids(self, ingest_app_context):
@@ -237,6 +249,7 @@ class TestIngest:
         chunk_b = chunk_a.model_copy(update={"text": "chunk B", "chunk_id": "1"})
         chunks = [chunk_a, chunk_b]
         ingest_mocks.embedder.embed_chunks.return_value = Mock()
+        ingest_mocks.vectorstore.add_idempotent.return_value = _make_add_result(chunks_added=1, chunks_skipped=1)
 
         with patch("app.main.ingest_folder") as mock_ingest_folder:
             mock_ingest_folder.return_value = chunks
@@ -246,9 +259,27 @@ class TestIngest:
 
         assert response.status_code == 200
         assert body["documents_processed"] == 1
-        assert body["chunks_created"] == 2
+        assert body["chunks_created"] == 1
         assert set(body["document_ids"]) == {str(chunk_a.document_id)}
         assert body["processing_time_seconds"] >= 0
+
+    def test_ingest_returns_409_when_existing_chunk_changed(self, ingest_app_context):
+        ingest_mocks = ingest_app_context
+        chunk = _make_chunk("changed text", chunk_id="chunk-1")
+        vectors = Mock()
+        ingest_mocks.embedder.embed_chunks.return_value = vectors
+        ingest_mocks.vectorstore.add_idempotent.side_effect = ChunkConflictError(["chunk-1"])
+
+        with patch("app.main.ingest_folder", return_value=[chunk]):
+            response = ingest_mocks.test_app.post("/ingest", json={"source_path": "request/data"})
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == {
+            "message": "One or more chunks changed since they were ingested. Use force_rebuild=true to rebuild the index.",
+            "changed_chunk_ids": ["chunk-1"],
+        }
+        ingest_mocks.vectorstore.add_idempotent.assert_called_once_with(vectors, [chunk])
+        ingest_mocks.vectorstore.save.assert_not_called()
 
     def test_ingest_returns_404_when_folder_missing(self, ingest_app_context):
         ingest_mocks = ingest_app_context
@@ -300,6 +331,7 @@ class TestIngest:
         ingest_mocks = ingest_app_context
         chunk = _make_chunk("test chunk")
         ingest_mocks.embedder.embed_chunks.return_value = Mock()
+        ingest_mocks.vectorstore.add_idempotent.return_value = _make_add_result(chunks_added=1)
         ingest_mocks.vectorstore.save.side_effect = RuntimeError("save failed")
 
         with patch("app.main.ingest_folder", return_value=[chunk]):
@@ -307,7 +339,7 @@ class TestIngest:
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to save ingested documents"
-        ingest_mocks.vectorstore.add.assert_called_once()
+        ingest_mocks.vectorstore.add_idempotent.assert_called_once()
         ingest_mocks.vectorstore.save.assert_called_once()
 
 class TestQuery:

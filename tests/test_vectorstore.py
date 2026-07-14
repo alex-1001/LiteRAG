@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from app.vectorstore import VectorStore
+from app.vectorstore import ChunkConflictError, VectorStore
 from app.models import DocumentChunk
 import numpy as np
 from numpy.typing import NDArray
@@ -191,6 +191,123 @@ class TestVectorStoreAdd:
         vectors = vectors[:, np.newaxis]
         with pytest.raises(ValueError):
             vs.add(vectors=vectors, chunks=chunks)
+
+class TestVectorStoreAddIdempotent:
+    """Test suite for idempotent chunk insertion."""
+
+    def test_add_idempotent_adds_new_chunks(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        vectors, chunks = create_ordered_test_vectors(num_vectors=3, dim=5)
+
+        result = vs.add_idempotent(vectors=vectors, chunks=chunks)
+
+        assert result.vector_ids == [0, 1, 2]
+        assert result.chunks_added == 3
+        assert result.chunks_skipped == 0
+        assert result.skipped_chunk_ids == []
+        assert len(vs) == 3
+        for i, vector_id in enumerate(result.vector_ids):
+            assert vs.id_to_chunk[vector_id] == chunks[i]
+
+    def test_add_idempotent_skips_existing_equivalent_chunks(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        vectors, chunks = create_ordered_test_vectors(num_vectors=2, dim=5)
+        first_result = vs.add_idempotent(vectors=vectors, chunks=chunks)
+        original_metadata = dict(vs.id_to_chunk)
+
+        different_vectors = np.flip(vectors, axis=0).copy()
+        second_result = vs.add_idempotent(vectors=different_vectors, chunks=chunks)
+
+        assert first_result.vector_ids == [0, 1]
+        assert second_result.vector_ids == []
+        assert second_result.chunks_added == 0
+        assert second_result.chunks_skipped == 2
+        assert second_result.skipped_chunk_ids == [chunk.chunk_id for chunk in chunks]
+        assert len(vs) == 2
+        assert vs.id_to_chunk == original_metadata
+
+    def test_add_idempotent_ignores_created_at_when_comparing_chunks(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        vectors, chunks = create_identical_test_vectors(num_vectors=1, dim=5)
+        vs.add_idempotent(vectors=vectors, chunks=chunks)
+
+        same_stable_payload = [
+            chunks[0].model_copy(update={"created_at": None})
+        ]
+        second_result = vs.add_idempotent(vectors=vectors, chunks=same_stable_payload)
+
+        assert second_result.chunks_added == 0
+        assert second_result.chunks_skipped == 1
+        assert len(vs) == 1
+
+    def test_add_idempotent_raises_conflict_for_changed_existing_chunk(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        vectors, chunks = create_identical_test_vectors(num_vectors=1, dim=5)
+        vs.add_idempotent(vectors=vectors, chunks=chunks)
+
+        changed_chunk = chunks[0].model_copy(update={"text": "Changed text"})
+
+        with pytest.raises(ChunkConflictError) as exc:
+            vs.add_idempotent(vectors=vectors, chunks=[changed_chunk])
+
+        assert exc.value.chunk_ids == [chunks[0].chunk_id]
+        assert len(vs) == 1
+        assert vs.id_to_chunk[0] == chunks[0]
+
+    def test_add_idempotent_conflict_does_not_partially_add_new_chunks(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        initial_vectors, initial_chunks = create_identical_test_vectors(num_vectors=1, dim=5)
+        vs.add_idempotent(vectors=initial_vectors, chunks=initial_chunks)
+
+        changed_chunk = initial_chunks[0].model_copy(update={"text": "Changed text"})
+        new_vector = np.zeros((1, 5), dtype=np.float32)
+        new_chunk = DocumentChunk(
+            document_id=uuid4(),
+            document_name="new_doc",
+            chunk_id="new_chunk",
+            text="New Chunk",
+            metadata={},
+        )
+        mixed_vectors = np.vstack([new_vector, initial_vectors])
+
+        with pytest.raises(ChunkConflictError):
+            vs.add_idempotent(vectors=mixed_vectors, chunks=[new_chunk, changed_chunk])
+
+        assert len(vs) == 1
+        assert set(vs.id_to_chunk) == {0}
+
+    def test_add_idempotent_rejects_duplicate_incoming_chunk_ids(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        vectors, chunks = create_identical_test_vectors(num_vectors=2, dim=5)
+        duplicate_chunk = chunks[1].model_copy(update={"chunk_id": chunks[0].chunk_id})
+
+        with pytest.raises(ValueError, match="duplicate chunk_ids"):
+            vs.add_idempotent(vectors=vectors, chunks=[chunks[0], duplicate_chunk])
+
+        assert len(vs) == 0
+
+    def test_add_idempotent_raises_if_not_initialized(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vectors, chunks = create_identical_test_vectors(num_vectors=1, dim=5)
+
+        with pytest.raises(RuntimeError):
+            vs.add_idempotent(vectors=vectors, chunks=chunks)
+
+    def test_add_idempotent_raises_for_vector_chunk_length_mismatch(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        vectors, chunks = create_identical_test_vectors(num_vectors=2, dim=5)
+
+        with pytest.raises(ValueError, match="same length"):
+            vs.add_idempotent(vectors=vectors, chunks=chunks[:1])
+
+        assert len(vs) == 0
 
 class TestOrderedTestVectorsHelper:
     """Verifies create_ordered_test_vectors ordering assumption for [1,0,...,0] query."""

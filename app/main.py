@@ -7,7 +7,7 @@ from transformers import AutoTokenizer
 from app.models import QueryRequest, QueryResponse, IngestRequest, IngestResponse, Source
 from app.config import load_settings, Settings
 from app.embed import Embedder
-from app.vectorstore import VectorStore
+from app.vectorstore import VectorStore, ChunkConflictError
 from app.ingest import ingest_folder, resolve_ingest_path
 from app.retrieve import retrieve_chunks
 from app.rag import answer_query
@@ -136,8 +136,16 @@ def ingest(
                 vectorstore.clear()
                 vectorstore.create()
             
-            vectorstore.add(vectors, chunks)
+            result = vectorstore.add_idempotent(vectors, chunks)
             vectorstore.save()
+    except ChunkConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "One or more chunks changed since they were ingested. Use force_rebuild=true to rebuild the index.",
+                "changed_chunk_ids": e.chunk_ids,
+            },
+        ) from e
     except Exception as e:
         logging.exception("Failed to update vectorstore during ingest")
         raise HTTPException(
@@ -149,7 +157,7 @@ def ingest(
     
     return IngestResponse(
         documents_processed=len(doc_ids),
-        chunks_created=len(chunks),
+        chunks_created=result.chunks_added,
         document_ids=doc_ids,
         processing_time_seconds=time.perf_counter() - start,
     )

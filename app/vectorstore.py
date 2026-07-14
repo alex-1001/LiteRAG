@@ -1,5 +1,5 @@
 """handles vector storage and search"""
-
+from dataclasses import dataclass
 from app.models import DocumentChunk
 import numpy as np
 from numpy.typing import NDArray
@@ -10,6 +10,36 @@ from pathlib import Path
 import warnings
 
 # TODO: could add more specific VectorStoreNotInitializedError
+class ChunkConflictError(RuntimeError):
+    def __init__(self, chunk_ids: list[str]):
+        self.chunk_ids = chunk_ids
+        super().__init__("Chunks changed since they were first ingested.")
+
+@dataclass(frozen=True)
+class AddChunksResult:
+    vector_ids: list[int]
+    chunks_added: int
+    chunks_skipped: int
+    skipped_chunk_ids: list[str]
+
+def _stable_chunk_payload(chunk: DocumentChunk) -> dict:
+    # warning: revisit this if DocumentChunk ever changes
+    return chunk.model_dump(mode="json", exclude={"created_at"})
+
+def _coerce_vectors(vectors: NDArray, dim: int):
+    vectors = np.asarray(vectors, dtype=np.float32)
+
+    if vectors.ndim == 1:
+        vectors = vectors.reshape(1, -1)
+    elif vectors.ndim != 2:
+        raise ValueError(f"Vectors must be (N, dim) or (dim,) but got {vectors.shape}")
+
+    if vectors.shape[1] != dim:
+        raise ValueError(
+            f"Vector dimension {vectors.shape[1]} does not match expected dimension {dim}"
+        )
+
+    return vectors
 
 class VectorStore:
     """Wrapper class that couples vector index to metadata database; supports vector storage and search"""
@@ -18,7 +48,7 @@ class VectorStore:
         self.storage_dir = Path(storage_dir) # directory to store vector index and metadata
         self.storage_dir.mkdir(parents=True, exist_ok=True) # create directory if it doesn't exist
         self.embed_model_name = embed_model_name # optional validation of embedding model used
-        
+
         self.space = "cosine" # vector space (cosine similarity)
         self.index: Optional[Index] = None # vector index
         self.hsnw_params = {
@@ -27,40 +57,40 @@ class VectorStore:
             "ef_construction": 128,
             "allow_replace_deleted": True,
         }
-        
+
         self.next_id = 0 # next chunk id to assign in index
         self.id_to_chunk: Dict[int, DocumentChunk] = {} # maps chunk ids (stored in index) to Document Chunks
-        
-    
+
+
     def create(self):
         """initializes (or resets) vector index and metadata database in memory. does not remove from disk."""
         # initialize vector index
         self.index = Index(space=self.space, dim = self.dim)
         self.index.init_index(**self.hsnw_params)
-        
+
         self.id_to_chunk.clear() # clear id -> chunk mapping
         self.next_id = 0 # restart counter
-    
+
     def load(self):
         """loads vector index and metadata into memory"""
         index_path = Path(self.storage_dir) / "index.bin"
         metadata_path = Path(self.storage_dir) / "metadata.jsonl"
         index_metadata_path = Path(self.storage_dir) / "index_metadata.json"
-        
+
         if not index_path.exists():
             raise FileNotFoundError(f"Vector index file {index_path} not found")
         if not metadata_path.exists():
             raise FileNotFoundError(f"Metadata file {metadata_path} not found")
         if not index_metadata_path.exists():
             raise FileNotFoundError(f"Index metadata file {index_metadata_path} not found")
-        
+
         # load index metadata
         try:
             with open(index_metadata_path, "r") as f:
                 index_metadata = json.load(f)
         except Exception as e:
             raise RuntimeError(f"Failed to load index metadata from {index_metadata_path}: {e}") from e
-        
+
         # validate index metadata
         if index_metadata["dim"] != self.dim:
             raise ValueError(f"Dimension in index metadata {index_metadata['dim']} does not match expected dimension {self.dim}")
@@ -74,11 +104,11 @@ class VectorStore:
                 raise ValueError(f"Loaded embed_model_name {index_metadata['embed_model_name']} does not match expected embed_model_name {self.embed_model_name}")
         else:
             self.embed_model_name = index_metadata["embed_model_name"]
-            
+
         if index_metadata["hsnw_params"] != self.hsnw_params:
             warnings.warn(f"Loaded hsnw_params {index_metadata['hsnw_params']} does not match expected hsnw_params {self.hsnw_params}. Using new hsnw_params.")
             self.hsnw_params = index_metadata["hsnw_params"]
-        
+
         # load index
         try:
             loaded_index = Index(space=index_metadata["space"], dim=index_metadata["dim"])
@@ -104,14 +134,14 @@ class VectorStore:
                     loaded_id_to_chunk[id] = chunk
         except Exception as e:
             raise RuntimeError(f"Failed to load metadata from {metadata_path}: {e}") from e
-        
+
         # validate index ids
         index_ids = set(loaded_index.get_ids_list())
         metadata_ids = set(int(id) for id in loaded_id_to_chunk.keys())
         if index_ids != metadata_ids:
             missing_in_metadata = index_ids - metadata_ids
             missing_in_index = metadata_ids - index_ids
-            
+
             raise RuntimeError(
                 f"ID mismatch between index and metadata:\n"
                 f"  IDs in index but not in metadata: {sorted(missing_in_metadata)}\n"
@@ -122,11 +152,11 @@ class VectorStore:
         # fetch next_id
         max_index_id = max(index_ids) if index_ids else -1
         self.next_id = max_index_id + 1
-        
+
         # update vector index and metadata in memory
         self.index = loaded_index
         self.id_to_chunk = loaded_id_to_chunk
-        
+
     def load_or_create(self):
         """loads vector index and metadata from disk (if it exists in storage_dir) or initializes new ones"""
         index_path = self.storage_dir / "index.bin"
@@ -136,50 +166,96 @@ class VectorStore:
         # If any are missing, initialize a new index and metadata
         if (index_path.exists() and metadata_path.exists() and index_metadata_path.exists()):
             self.load()
-        else: 
+        else:
             self.create()
-        
-    
+
+
     def add(self, vectors: NDArray[np.float32], chunks: List[DocumentChunk]) -> List[int]:
         """adds vectors (N, dim) or single vector (dim,) to index and updates metadata database. expands index if necessary.
         chunks is a list of DocumentChunks that correspond to the vectors. must be same length as vectors.
         returns a list of ids assigned to the vectors."""
         if not self.is_initialized():
             raise RuntimeError("Vector index and metadata database are not properly initialized. Please call create() first.")
-        
+
         # check if vectors are correct shape
-        vectors = np.asarray(vectors, dtype=np.float32)
-        if vectors.ndim == 1:
-            vectors = vectors.reshape(1, -1)
-        elif vectors.ndim != 2:
-            raise ValueError(f"Vectors must be (N, dim) or (dim,) but got {vectors.shape}")
-        
-        if vectors.shape[1] != self.dim:
-            raise ValueError(f"Vector dimension {vectors.shape[1]} does not match expected dimension {self.dim}")
-        
+        vectors = _coerce_vectors(vectors, self.dim)
         num_vectors = vectors.shape[0]
+
         # check if chunks are correct shape
-        if len(chunks) != num_vectors: 
+        if len(chunks) != num_vectors:
             raise ValueError(f"Chunks must be same length as vectors but got {len(chunks)} chunks and {num_vectors} vectors")
         for chunk in chunks:
             if not isinstance(chunk, DocumentChunk):
                 raise ValueError(f"Chunk {chunk} is not a DocumentChunk")
-        
+
         # resize if index has space
         if self.index.get_current_count() + num_vectors > self.index.get_max_elements():
             self.resize((self.index.get_current_count() + num_vectors) * 2) # resize to double what we would need
-            
+
         # add vectors to index
         ids = list(range(self.next_id, self.next_id + num_vectors))
         self.index.add_items(data = vectors, ids = ids, replace_deleted = True) # note that vectors marked as deleted are replaced
         self.next_id += num_vectors
-        
+
         # update metadata
         for id, chunk in zip(ids, chunks):
             self.id_to_chunk[id] = chunk
-        
+
         return ids
-            
+
+    def add_idempotent(self, vectors: NDArray[np.float32], chunks: List[DocumentChunk]) -> AddChunksResult:
+        """idempotent version of add(). Adds vectors to index if their chunk_id is not already present.
+        If the chunk_id exists in the index and the chunk contents are unchanged, it will be skipped.
+        If the chunk_id exists in the index and chunk is changed, raises ChunkConflictError."""
+        if not self.is_initialized():
+            raise RuntimeError("Vector index and metadata database are not properly initialized. Please call create() first.")
+
+        for chunk in chunks:
+            if not isinstance(chunk, DocumentChunk):
+                raise ValueError(f"Chunk {chunk} is not a DocumentChunk")
+
+        if len({chunk.chunk_id for chunk in chunks}) != len(chunks):
+            raise ValueError("Chunks must not have duplicate chunk_ids.")
+
+        vectors = _coerce_vectors(vectors, self.dim)
+        num_vectors = vectors.shape[0]
+
+        if len(chunks) != vectors.shape[0]:
+            raise ValueError(f"Chunks must be same length as vectors but got {len(chunks)} chunks and {num_vectors} vectors")
+
+        existing_by_chunk_id = {
+            chunk.chunk_id: chunk
+            for chunk in self.id_to_chunk.values()
+        }
+
+        new_chunks = []
+        new_vectors = []
+        skipped_chunk_ids = []
+        conflict_chunk_ids = []
+
+        for vector, chunk in zip(vectors, chunks):
+            existing = existing_by_chunk_id.get(chunk.chunk_id)
+
+            if existing is None:
+                new_chunks.append(chunk)
+                new_vectors.append(vector)
+            elif _stable_chunk_payload(existing) == _stable_chunk_payload(chunk):
+                skipped_chunk_ids.append(chunk.chunk_id)
+            else:
+                conflict_chunk_ids.append(chunk.chunk_id)
+
+        if conflict_chunk_ids:
+            raise ChunkConflictError(conflict_chunk_ids)
+
+        vector_ids = self.add(np.asarray(new_vectors, dtype=np.float32), new_chunks) if new_chunks else []
+
+        return AddChunksResult(
+            vector_ids=vector_ids,
+            chunks_added=len(new_chunks),
+            chunks_skipped=len(skipped_chunk_ids),
+            skipped_chunk_ids=skipped_chunk_ids,
+        )
+
     def search(self, query: NDArray[np.float32], top_k: int) -> Tuple[List[int], List[float], List[DocumentChunk]]:
         """searches vector index for top k most similar vectors to a single query vector (dim,) or (1, dim).
         returns a tuple of (ids, distances, chunks)"""
@@ -187,47 +263,47 @@ class VectorStore:
             raise RuntimeError("Vector index and metadata database are not properly initialized. Please call create() first.")
         if top_k <= 0:
             raise ValueError(f"Top k must be greater than 0 but got {top_k}")
-        
-        # check if query is correct shape 
+
+        # check if query is correct shape
         query = np.asarray(query, dtype=np.float32)
         if query.ndim == 1:
             query = query.reshape(1, -1)
-        elif query.ndim != 2: 
+        elif query.ndim != 2:
             raise ValueError(f"Query must be (dim,) or (N, dim) but got {query.shape}")
         if query.shape[1] != self.dim:
             raise ValueError(f"Query dimension {query.shape[1]} does not match expected dimension {self.dim}")
         if query.shape[0] != 1:
             raise ValueError(f"Query must have single first dimension but got {query.shape[0]}")
-        
+
         # query index
         max_vectors = self.index.get_current_count()
         if max_vectors == 0:
             return [], [], []
-        
+
         if max_vectors <= top_k:
             # return all vectors
             top_k = max_vectors
-        
+
         top_k_ids, top_k_distances = self.index.knn_query(data = query, k = top_k) # (1, k)
         # TODO: allow for controlling ef
-        
+
         # get chunks
         chunks = [self.id_to_chunk[int(id)] for id in top_k_ids[0]]
         return top_k_ids[0].tolist(), top_k_distances[0].tolist(), chunks
-    
+
     def resize(self, new_size: int):
         """resizes vector index to new size. new size must be greater than or equal to number of vectors in index."""
         if not self.is_initialized():
             raise RuntimeError("Vector index and metadata database are not properly initialized. Please call create() first.")
 
         num_vectors = self.index.get_current_count()
-        
+
         if new_size < num_vectors:
             raise ValueError(f"New size {new_size} is less than number of vectors {num_vectors}")
-        
+
         self.index.resize_index(new_size)
         self.hsnw_params["max_elements"] = new_size
-        
+
     def save(self):
         """saves vector index and metadata to disk"""
         if not self.is_initialized():
@@ -236,10 +312,10 @@ class VectorStore:
         index_path = Path(self.storage_dir) / "index.bin"
         metadata_path = Path(self.storage_dir) / "metadata.jsonl"
         index_metadata_path = Path(self.storage_dir) / "index_metadata.json"
-        
+
         # save index
-        self.index.save_index(index_path.as_posix()) 
-        
+        self.index.save_index(index_path.as_posix())
+
         # save metadata
         with open(metadata_path, "w") as f:
             for id, chunk in self.id_to_chunk.items():
@@ -248,7 +324,7 @@ class VectorStore:
                     "chunk": chunk.model_dump(mode="json"),
                 }
                 f.write(json.dumps(line) + "\n")
-        
+
         # save index metadata
         index_metadata = {
             "embed_model_name": self.embed_model_name,
@@ -259,35 +335,35 @@ class VectorStore:
         }
         with open(index_metadata_path, "w") as f:
             json.dump(index_metadata, f)
-        
+
     def __len__(self) -> int:
         """returns number of vectors in index"""
         if not self.is_initialized():
             raise RuntimeError("Vector index and metadata database are not properly initialized. Please call create() first.")
-        
+
         count = self.index.get_current_count()
         if count != len(self.id_to_chunk): # maybe want to also check next_id? if we want to enforce 0 to n id's
             raise RuntimeError(
                 f"Data inconsistency in number of vectors: index={count}, metadata={len(self.id_to_chunk)}, next_id={self.next_id}"
             )
         return self.index.get_current_count()
-    
+
     def is_initialized(self) -> bool:
         """returns True if vector index and metadata database are properly initialized"""
         return self.index is not None and self.id_to_chunk is not None
-    
+
     def clear(self):
         """clears vector index and metadata database from memory and disk. requires calling create() again to re-initialize."""
         # clear index and metadata in memory
         self.index = None
         self.id_to_chunk.clear()
         self.next_id = 0
-        
+
         # clear from disk
         index_path = Path(self.storage_dir) / "index.bin"
         metadata_path = Path(self.storage_dir) / "metadata.jsonl"
         index_metadata_path = Path(self.storage_dir) / "index_metadata.json"
-        
+
         index_path.unlink(missing_ok=True)
         metadata_path.unlink(missing_ok=True)
         index_metadata_path.unlink(missing_ok=True)

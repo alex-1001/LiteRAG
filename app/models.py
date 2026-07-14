@@ -39,7 +39,7 @@ class IngestResponse(BaseModel):
     Response after ingesting folder of documents.
     """
     documents_processed: int = Field(..., description="Number of documents processed.", ge=0)
-    chunks_created: int = Field(..., description="Number of chunks created.", ge=0)
+    chunks_created: int = Field(..., description="Number of chunks added to index.", ge=0)
     document_ids: List[UUID] = Field(..., description="List of unique identifiers for each document processed.")
     processing_time_seconds: float = Field(..., description="Time taken to process the documents.", ge=0.0)
     
