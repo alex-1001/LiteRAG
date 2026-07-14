@@ -97,8 +97,10 @@ def ingest(
         chunks = ingest_folder(source_path, tokenizer, config.chunk_size, config.chunk_overlap)
         if not chunks:
                 if req.force_rebuild:
-                    vectorstore.clear()
-                    vectorstore.create()
+                    with lock: 
+                        vectorstore.clear()
+                        vectorstore.create()
+                        vectorstore.save()
                 
                 return IngestResponse(
                     documents_processed=0,
