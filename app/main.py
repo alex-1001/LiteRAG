@@ -224,7 +224,7 @@ def query(
                 document_id=chunk.document_id,
                 chunk_id=chunk.chunk_id,
                 snippet=chunk.text,
-                score=1.0 - distances[cid - 1],
+                cosine_similarity=1.0 - distances[cid - 1],
             )
         )
         

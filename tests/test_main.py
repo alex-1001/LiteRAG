@@ -456,7 +456,20 @@ class TestQuery:
         assert len(body["sources"]) == 2
         assert [s["document_name"] for s in body["sources"]] == ["doc1.md", "doc2.md"]
         assert [s["snippet"] for s in body["sources"]] == ["chunk1 text", "chunk2 text"]
-        assert [s["score"] for s in body["sources"]] == pytest.approx([0.4, 0.3])
+        assert [s["cosine_similarity"] for s in body["sources"]] == pytest.approx([0.4, 0.3])
+
+    def test_query_allows_negative_cosine_similarity(self, query_app_context):
+        query_mocks = query_app_context
+        chunk = _make_chunk("low similarity text", "doc.md", "0")
+
+        with patch("app.main.retrieve_chunks") as mock_retrieve, patch("app.main.answer_query") as mock_answer:
+            mock_retrieve.return_value = ([chunk], [1.2])
+            mock_answer.return_value = ("Answer", [1])
+
+            response = query_mocks.test_app.post("/query", json={"question": "What is this?"})
+
+        assert response.status_code == 200
+        assert response.json()["sources"][0]["cosine_similarity"] == pytest.approx(-0.2)
 
     def test_query_returns_no_sources_when_no_chunks_retrieved(self, query_app_context):
         query_mocks = query_app_context

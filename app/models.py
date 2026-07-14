@@ -24,7 +24,7 @@ class Source(BaseModel):
     document_id: UUID = Field(..., description="Unique, stable identifier of document that a chunk originates from.")
     chunk_id: str = Field(..., description="Unique identifier for a chunk within its document.")
     snippet: str = Field(..., description="An excerpt of the chunk.", min_length=1)
-    score: float = Field(..., description="Similarity score between the query and the chunk.", ge=0.0, le=1.0)
+    cosine_similarity: float = Field(..., description="Cosine similarity between the query and the chunk.", ge=-1.0, le=1.0)
     
 class IngestRequest(BaseModel):
     """
