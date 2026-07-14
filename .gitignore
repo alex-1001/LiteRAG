@@ -20,3 +20,12 @@ __pycache__/
 .env
 .env.local
 
+# Local/generated app state
+storage/
+.vectorstore/
+
+# Local document corpus
+data/raw/
+
+# OS files
+.DS_Store

@@ -1,18 +1,12 @@
-fastapi
-uvicorn[standard]
-pydantic-settings
-hnswlib
-numpy
-python-dotenv
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic-settings>=2.0,<3.0
+hnswlib>=0.8,<1.0
+numpy>=1.26,<3.0
+python-dotenv>=1.0,<2.0
 
 # LLM API client (OpenRouter uses OpenAI-compatible API)
-openai
+openai>=2.0,<3.0
 
 # Embedding models (local)
-sentence-transformers
-
-# Testing (consider moving to requirements-dev.txt)
-pytest
-
-# TODO: create a requirements-dev.txt file for development dependencies
-# TODO: pin versions of dependencies
+sentence-transformers>=5.0,<6.0
