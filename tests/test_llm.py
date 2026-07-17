@@ -1,10 +1,18 @@
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from openai import APIError
 
-from app.llm import ModelProviderError, OpenAICompatibleChatModel
+from app.config import Settings
+from app.llm import (
+    OLLAMA_DEFAULT_BASE_URL,
+    OLLAMA_PLACEHOLDER_API_KEY,
+    OPENROUTER_DEFAULT_BASE_URL,
+    ModelProviderError,
+    OpenAICompatibleChatModel,
+    build_chat_model,
+)
 
 
 def _response_with_content(content):
@@ -150,3 +158,114 @@ class TestOpenAICompatibleChatModelResponse:
             )
 
         assert exc_info.value.__cause__ is api_error
+
+
+def _factory_settings(**overrides) -> Settings:
+    """Build settings without reading values from the developer's environment."""
+    values = {
+        "embed_model_name": "test-embed",
+        "data_dir": "/test/data",
+        "llm_provider": "ollama",
+        "llm_model": "test-model",
+        "llm_base_url": None,
+        "llm_api_key": None,
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+class TestBuildChatModel:
+    @pytest.mark.parametrize(
+        ("provider_settings", "expected_base_url", "expected_api_key"),
+        [
+            (
+                {
+                    "llm_provider": "openrouter",
+                    "llm_api_key": "openrouter-secret",
+                },
+                OPENROUTER_DEFAULT_BASE_URL,
+                "openrouter-secret",
+            ),
+            (
+                {"llm_provider": "ollama"},
+                OLLAMA_DEFAULT_BASE_URL,
+                OLLAMA_PLACEHOLDER_API_KEY,
+            ),
+        ],
+    )
+    def test_uses_provider_defaults(
+        self,
+        provider_settings,
+        expected_base_url,
+        expected_api_key,
+    ):
+        settings = _factory_settings(**provider_settings)
+        fake_client = Mock()
+        fake_chat_model = Mock()
+
+        with (
+            patch("app.llm.OpenAI", return_value=fake_client) as mock_openai,
+            patch(
+                "app.llm.OpenAICompatibleChatModel",
+                return_value=fake_chat_model,
+            ) as mock_adapter,
+        ):
+            result = build_chat_model(settings)
+
+        mock_openai.assert_called_once_with(
+            base_url=expected_base_url,
+            api_key=expected_api_key,
+        )
+        mock_adapter.assert_called_once_with(
+            client=fake_client,
+            model="test-model",
+        )
+        assert result is fake_chat_model
+
+    @pytest.mark.parametrize(
+        ("provider_settings", "expected_api_key"),
+        [
+            (
+                {
+                    "llm_provider": "openrouter",
+                    "llm_api_key": "openrouter-secret",
+                },
+                "openrouter-secret",
+            ),
+            (
+                {"llm_provider": "ollama"},
+                OLLAMA_PLACEHOLDER_API_KEY,
+            ),
+        ],
+    )
+    def test_honors_base_url_override(
+        self,
+        provider_settings,
+        expected_api_key,
+    ):
+        settings = _factory_settings(
+            **provider_settings,
+            llm_base_url="http://custom-provider.test:9000/v1",
+        )
+        fake_client = Mock()
+
+        with patch("app.llm.OpenAI", return_value=fake_client) as mock_openai:
+            result = build_chat_model(settings)
+
+        mock_openai.assert_called_once_with(
+            base_url="http://custom-provider.test:9000/v1",
+            api_key=expected_api_key,
+        )
+        assert isinstance(result, OpenAICompatibleChatModel)
+
+    def test_rejects_openrouter_settings_without_api_key_defensively(self):
+        valid_settings = _factory_settings(
+            llm_provider="openrouter",
+            llm_api_key="openrouter-secret",
+        )
+        invalid_settings = valid_settings.model_copy(
+            update={"llm_api_key": None}
+        )
+
+        with pytest.raises(ValueError, match="OpenRouter API key is missing"):
+            build_chat_model(invalid_settings)

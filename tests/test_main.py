@@ -91,9 +91,10 @@ class TestIngest:
     def ingest_app_context(self, main_app_overrides):
         settings = Settings(
             embed_model_name="test-embed",
-            openrouter_base_url="https://example.com",
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
+            llm_provider="openrouter",
+            llm_base_url="https://example.com/v1",
+            llm_api_key="test-key",
+            llm_model="test-llm",
             data_dir="/default/data",
             chunk_size=100,
             chunk_overlap=10,
@@ -359,9 +360,10 @@ class TestQuery:
     def query_app_context(self, main_app_overrides):
         settings = Settings(
             embed_model_name="test-embed",
-            openrouter_base_url="https://example.com",
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
+            llm_provider="openrouter",
+            llm_base_url="https://example.com/v1",
+            llm_api_key="test-key",
+            llm_model="test-llm",
             data_dir="/default/data",
             top_k=5,
         )
@@ -570,26 +572,11 @@ class TestLifespan:
             tokenizer_name="test-tokenizer",
             storage_dir="/tmp/vectorstore",
             data_dir="/default/data",
-            openrouter_base_url="https://example.com",
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
+            llm_provider="openrouter",
+            llm_base_url="https://example.com/v1",
+            llm_api_key="test-key",
+            llm_model="test-llm",
         )
-
-    @pytest.mark.anyio
-    async def test_lifespan_requires_openrouter_settings(self):
-        settings = Settings(
-            embed_model_name="test-embed",
-            data_dir="/default/data",
-            openrouter_base_url=None,
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
-        )
-        test_app = FastAPI()
-
-        with patch("app.main.load_settings", return_value=settings):
-            with pytest.raises(ValueError, match="OPENROUTER_BASE_URL"):
-                async with lifespan(test_app):
-                    pass
 
     @pytest.mark.anyio
     async def test_lifespan_wires_startup_dependencies(self, lifespan_settings):
@@ -598,7 +585,6 @@ class TestLifespan:
         fake_embedder.dim = 384
         fake_tokenizer = Mock()
         fake_vectorstore = Mock()
-        fake_client = Mock()
         fake_chat_model = Mock()
 
         with (
@@ -606,11 +592,10 @@ class TestLifespan:
             patch("app.main.Embedder", return_value=fake_embedder) as mock_embedder_cls,
             patch("app.main.AutoTokenizer.from_pretrained", return_value=fake_tokenizer) as mock_tokenizer_loader,
             patch("app.main.VectorStore", return_value=fake_vectorstore) as mock_vectorstore_cls,
-            patch("app.main.OpenAI", return_value=fake_client) as mock_openai_cls,
             patch(
-                "app.main.OpenAICompatibleChatModel",
+                "app.main.build_chat_model",
                 return_value=fake_chat_model,
-            ) as mock_chat_model_cls,
+            ) as mock_build_chat_model,
         ):
             async with lifespan(test_app):
                 assert test_app.state.config is lifespan_settings
@@ -628,14 +613,7 @@ class TestLifespan:
             embed_model_name="test-embed",
         )
         fake_vectorstore.load_or_create.assert_called_once()
-        mock_openai_cls.assert_called_once_with(
-            api_key="test-key",
-            base_url="https://example.com",
-        )
-        mock_chat_model_cls.assert_called_once_with(
-            client=fake_client,
-            model="test-llm",
-        )
+        mock_build_chat_model.assert_called_once_with(lifespan_settings)
         fake_vectorstore.save.assert_called_once()
 
     @pytest.mark.anyio
@@ -650,7 +628,7 @@ class TestLifespan:
             patch("app.main.Embedder", return_value=fake_embedder),
             patch("app.main.AutoTokenizer.from_pretrained") as mock_tokenizer_loader,
             patch("app.main.VectorStore", return_value=Mock()),
-            patch("app.main.OpenAI", return_value=Mock()),
+            patch("app.main.build_chat_model", return_value=Mock()),
         ):
             async with lifespan(test_app):
                 pass
@@ -670,7 +648,7 @@ class TestLifespan:
             patch("app.main.Embedder", return_value=fake_embedder),
             patch("app.main.AutoTokenizer.from_pretrained", return_value=Mock()),
             patch("app.main.VectorStore", return_value=fake_vectorstore),
-            patch("app.main.OpenAI", return_value=Mock()),
+            patch("app.main.build_chat_model", return_value=Mock()),
             patch("app.main.logging.exception") as mock_log_exception,
         ):
             async with lifespan(test_app):

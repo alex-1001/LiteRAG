@@ -5,15 +5,14 @@ from typing import Dict
 from transformers import AutoTokenizer
 
 from app.models import QueryRequest, QueryResponse, IngestRequest, IngestResponse, Source
-from app.config import load_settings, Settings
+from app.config import Settings, load_settings
 from app.embed import Embedder
 from app.vectorstore import VectorStore, ChunkConflictError
 from app.ingest import ingest_folder, resolve_ingest_path
 from app.retrieve import retrieve_chunks
 from app.rag import InvalidModelResponse, answer_query
-from app.llm import ChatModel, OpenAICompatibleChatModel
+from app.llm import ChatModel, build_chat_model
 from contextlib import asynccontextmanager
-from openai import OpenAI
 from threading import Lock
 import logging
 
@@ -39,11 +38,6 @@ def get_lock(request: Request) -> Lock:
 async def lifespan(app: FastAPI):
     # startup
     settings = load_settings()
-    if not all([settings.openrouter_base_url, settings.openrouter_api_key, settings.openrouter_model]):
-        raise ValueError(
-            "OPENROUTER_BASE_URL, OPENROUTER_API_KEY, and OPENROUTER_MODEL must be set for the app. "
-            "Check your .env or environment."
-        )
     app.state.config = settings
     
     embedder = Embedder(settings.embed_model_name)
@@ -56,9 +50,8 @@ async def lifespan(app: FastAPI):
     vectorstore = VectorStore(dim=embedder.dim, storage_dir=settings.storage_dir, embed_model_name=settings.embed_model_name)
     vectorstore.load_or_create()
     app.state.vectorstore = vectorstore
-    
-    client = OpenAI(api_key=settings.openrouter_api_key, base_url=settings.openrouter_base_url)
-    chat_model = OpenAICompatibleChatModel(client=client, model=settings.openrouter_model)
+
+    chat_model = build_chat_model(settings)
     app.state.chat_model = chat_model
     
     lock = Lock()

@@ -11,7 +11,7 @@ The source code is intentionally tight for now, covering the core pieces of a RA
 - Keeps ingest paths inside `DATA_DIR`
 - Stores embeddings in a local HNSW vector index
 - Uses SentenceTransformers for local embeddings
-- Uses an OpenAI-compatible LLM API through OpenRouter
+- Supports cloud generation through OpenRouter or local generation through Ollama
 - Returns cited source chunks with cosine similarity
 
 ## Setup
@@ -25,17 +25,33 @@ pip install -r requirements.txt
 cp .env.template .env
 ```
 
-Edit `.env` with your OpenRouter credentials and local paths:
+Edit `.env` with your model provider and local paths. For OpenRouter:
 
 ```env
-OPENROUTER_API_KEY=your_key
-OPENROUTER_MODEL=openai/gpt-4o-mini
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+LLM_PROVIDER=openrouter
+LLM_API_KEY=your_key
+LLM_MODEL=openai/gpt-4o-mini
 
 EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
 DATA_DIR=data/raw
 STORAGE_DIR=storage
 ```
+
+For a local Ollama instance:
+
+```env
+LLM_PROVIDER=ollama
+LLM_MODEL=your-installed-ollama-model
+
+EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+DATA_DIR=data/raw
+STORAGE_DIR=storage
+```
+
+`LLM_BASE_URL` is optional. It defaults to the standard endpoint for the
+selected provider, or you can set it to target a compatible custom endpoint.
+Ollama must be running and have the configured model installed before queries
+can generate answers.
 
 Create `DATA_DIR` and add `.txt` or `.md` files before ingesting.
 
