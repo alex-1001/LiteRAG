@@ -1,8 +1,18 @@
 import pytest
 from pathlib import Path
-from app.main import app, lifespan, get_client, get_config, get_embedder, get_vectorstore, get_lock, get_tokenizer
+from app.main import (
+    app,
+    get_chat_model,
+    get_config,
+    get_embedder,
+    get_lock,
+    get_tokenizer,
+    get_vectorstore,
+    lifespan,
+)
 from app.config import Settings
 from app.ingest import resolve_ingest_path
+from app.rag import InvalidModelResponse
 from app.vectorstore import AddChunksResult, ChunkConflictError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -359,7 +369,7 @@ class TestQuery:
         mocks = SimpleNamespace(
             settings=settings,
             embedder=Mock(),
-            client=Mock(),
+            chat_model=Mock(),
             vectorstore=Mock(),
             lock=Lock(),
             test_app=TestClient(app),
@@ -367,7 +377,7 @@ class TestQuery:
         
         main_app_overrides[get_config] = lambda: mocks.settings
         main_app_overrides[get_embedder] = lambda: mocks.embedder
-        main_app_overrides[get_client] = lambda: mocks.client
+        main_app_overrides[get_chat_model] = lambda: mocks.chat_model
         main_app_overrides[get_vectorstore] = lambda: mocks.vectorstore
         main_app_overrides[get_lock] = lambda: mocks.lock
         
@@ -423,7 +433,7 @@ class TestQuery:
         assert response.status_code == 200
         assert not query_mocks.lock.locked()
 
-    def test_query_calls_answer_query_with_client_and_model(self, query_app_context):
+    def test_query_calls_answer_query_with_chat_model(self, query_app_context):
         query_mocks = query_app_context
         chunks = [_make_chunk("retrieved text")]
 
@@ -437,8 +447,7 @@ class TestQuery:
         mock_answer.assert_called_once_with(
             "What is this?",
             chunks,
-            client=query_mocks.client,
-            llm_model="test-llm",
+            chat_model=query_mocks.chat_model,
         )
         
     def test_query_cites_correct_chunks(self, query_app_context):
@@ -519,13 +528,18 @@ class TestQuery:
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to retrieve relevant documents"
 
-    @pytest.mark.parametrize("llm_error", [ValueError("invalid json"), TypeError("bad citations")])
-    def test_query_returns_502_when_llm_response_is_invalid(self, query_app_context, llm_error):
+    def test_query_returns_502_when_llm_response_is_invalid(
+        self,
+        query_app_context,
+    ):
         query_mocks = query_app_context
 
         with (
             patch("app.main.retrieve_chunks") as mock_retrieve,
-            patch("app.main.answer_query", side_effect=llm_error),
+            patch(
+                "app.main.answer_query",
+                side_effect=InvalidModelResponse("invalid RAG response"),
+            ),
         ):
             mock_retrieve.return_value = ([_make_chunk("retrieved text")], [0.25])
 
@@ -585,6 +599,7 @@ class TestLifespan:
         fake_tokenizer = Mock()
         fake_vectorstore = Mock()
         fake_client = Mock()
+        fake_chat_model = Mock()
 
         with (
             patch("app.main.load_settings", return_value=lifespan_settings),
@@ -592,13 +607,17 @@ class TestLifespan:
             patch("app.main.AutoTokenizer.from_pretrained", return_value=fake_tokenizer) as mock_tokenizer_loader,
             patch("app.main.VectorStore", return_value=fake_vectorstore) as mock_vectorstore_cls,
             patch("app.main.OpenAI", return_value=fake_client) as mock_openai_cls,
+            patch(
+                "app.main.OpenAICompatibleChatModel",
+                return_value=fake_chat_model,
+            ) as mock_chat_model_cls,
         ):
             async with lifespan(test_app):
                 assert test_app.state.config is lifespan_settings
                 assert test_app.state.embedder is fake_embedder
                 assert test_app.state.tokenizer is fake_tokenizer
                 assert test_app.state.vectorstore is fake_vectorstore
-                assert test_app.state.client is fake_client
+                assert test_app.state.chat_model is fake_chat_model
                 assert test_app.state.lock is not None
 
         mock_embedder_cls.assert_called_once_with("test-embed")
@@ -612,6 +631,10 @@ class TestLifespan:
         mock_openai_cls.assert_called_once_with(
             api_key="test-key",
             base_url="https://example.com",
+        )
+        mock_chat_model_cls.assert_called_once_with(
+            client=fake_client,
+            model="test-llm",
         )
         fake_vectorstore.save.assert_called_once()
 

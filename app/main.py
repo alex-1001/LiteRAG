@@ -10,7 +10,8 @@ from app.embed import Embedder
 from app.vectorstore import VectorStore, ChunkConflictError
 from app.ingest import ingest_folder, resolve_ingest_path
 from app.retrieve import retrieve_chunks
-from app.rag import answer_query
+from app.rag import InvalidModelResponse, answer_query
+from app.llm import ChatModel, OpenAICompatibleChatModel
 from contextlib import asynccontextmanager
 from openai import OpenAI
 from threading import Lock
@@ -28,8 +29,8 @@ def get_vectorstore(request: Request) -> VectorStore:
 def get_tokenizer(request: Request) -> AutoTokenizer:
     return request.app.state.tokenizer
 
-def get_client(request: Request) -> OpenAI:
-    return request.app.state.client
+def get_chat_model(request: Request) -> ChatModel:
+    return request.app.state.chat_model
 
 def get_lock(request: Request) -> Lock:
     return request.app.state.lock
@@ -57,7 +58,8 @@ async def lifespan(app: FastAPI):
     app.state.vectorstore = vectorstore
     
     client = OpenAI(api_key=settings.openrouter_api_key, base_url=settings.openrouter_base_url)
-    app.state.client = client
+    chat_model = OpenAICompatibleChatModel(client=client, model=settings.openrouter_model)
+    app.state.chat_model = chat_model
     
     lock = Lock()
     app.state.lock = lock
@@ -175,7 +177,7 @@ def query(
     req: QueryRequest,
     config: Settings = Depends(get_config),
     embedder: Embedder = Depends(get_embedder),
-    client: OpenAI = Depends(get_client),
+    chat_model: ChatModel = Depends(get_chat_model),
     vectorstore: VectorStore = Depends(get_vectorstore),
     lock: Lock = Depends(get_lock),
 ) -> QueryResponse:
@@ -206,10 +208,9 @@ def query(
         answer, cited_ids = answer_query(
             req.question,
             chunks,
-            client=client,
-            llm_model=config.openrouter_model
+            chat_model=chat_model,
         )
-    except (ValueError, TypeError) as e:
+    except InvalidModelResponse as e:
         logging.exception("LLM returned an invalid response")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
