@@ -5,14 +5,14 @@ from typing import Dict
 from transformers import AutoTokenizer
 
 from app.models import QueryRequest, QueryResponse, IngestRequest, IngestResponse, Source
-from app.config import load_settings, Settings
+from app.config import Settings, load_settings
 from app.embed import Embedder
 from app.vectorstore import VectorStore, ChunkConflictError
 from app.ingest import ingest_folder, resolve_ingest_path
 from app.retrieve import retrieve_chunks
-from app.rag import answer_query
+from app.rag import InvalidModelResponse, answer_query
+from app.llm import ModelProviderError, ChatModel, build_chat_model
 from contextlib import asynccontextmanager
-from openai import OpenAI
 from threading import Lock
 import logging
 
@@ -28,8 +28,8 @@ def get_vectorstore(request: Request) -> VectorStore:
 def get_tokenizer(request: Request) -> AutoTokenizer:
     return request.app.state.tokenizer
 
-def get_client(request: Request) -> OpenAI:
-    return request.app.state.client
+def get_chat_model(request: Request) -> ChatModel:
+    return request.app.state.chat_model
 
 def get_lock(request: Request) -> Lock:
     return request.app.state.lock
@@ -38,11 +38,6 @@ def get_lock(request: Request) -> Lock:
 async def lifespan(app: FastAPI):
     # startup
     settings = load_settings()
-    if not all([settings.openrouter_base_url, settings.openrouter_api_key, settings.openrouter_model]):
-        raise ValueError(
-            "OPENROUTER_BASE_URL, OPENROUTER_API_KEY, and OPENROUTER_MODEL must be set for the app. "
-            "Check your .env or environment."
-        )
     app.state.config = settings
     
     embedder = Embedder(settings.embed_model_name)
@@ -55,9 +50,9 @@ async def lifespan(app: FastAPI):
     vectorstore = VectorStore(dim=embedder.dim, storage_dir=settings.storage_dir, embed_model_name=settings.embed_model_name)
     vectorstore.load_or_create()
     app.state.vectorstore = vectorstore
-    
-    client = OpenAI(api_key=settings.openrouter_api_key, base_url=settings.openrouter_base_url)
-    app.state.client = client
+
+    chat_model = build_chat_model(settings)
+    app.state.chat_model = chat_model
     
     lock = Lock()
     app.state.lock = lock
@@ -175,7 +170,7 @@ def query(
     req: QueryRequest,
     config: Settings = Depends(get_config),
     embedder: Embedder = Depends(get_embedder),
-    client: OpenAI = Depends(get_client),
+    chat_model: ChatModel = Depends(get_chat_model),
     vectorstore: VectorStore = Depends(get_vectorstore),
     lock: Lock = Depends(get_lock),
 ) -> QueryResponse:
@@ -206,14 +201,19 @@ def query(
         answer, cited_ids = answer_query(
             req.question,
             chunks,
-            client=client,
-            llm_model=config.openrouter_model
+            chat_model=chat_model,
         )
-    except (ValueError, TypeError) as e:
-        logging.exception("LLM returned an invalid response")
+    except InvalidModelResponse as e:
+        logging.exception("LLM returned an invalid RAG response")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="LLM returned an invalid response",
+        ) from e
+    except ModelProviderError as e:
+        logging.exception("Model provider request failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to generate answer",
         ) from e
     except Exception as e:
         logging.exception("Unexpected query failure")

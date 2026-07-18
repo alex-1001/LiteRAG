@@ -2,7 +2,7 @@
 
 Lightweight FastAPI service for indexing local `.txt` and `.md` documents, retrieving relevant chunks from a vector store, and answering questions with cited sources.
 
-The source code is intentionally tight for now, covering the core pieces of a RAG backend: document ingestion, chunking, embeddings, vector search, prompt construction, structured LLM responses, and API error handling.
+The source code is intentionally tight for now, covering the core components of a RAG backend: document ingestion, chunking, embeddings, vector search, prompt construction, structured LLM responses, and API error handling.
 
 ## Features
 
@@ -11,7 +11,7 @@ The source code is intentionally tight for now, covering the core pieces of a RA
 - Keeps ingest paths inside `DATA_DIR`
 - Stores embeddings in a local HNSW vector index
 - Uses SentenceTransformers for local embeddings
-- Uses an OpenAI-compatible LLM API through OpenRouter
+- Supports cloud generation through OpenRouter or local generation through Ollama
 - Returns cited source chunks with cosine similarity
 
 ## Setup
@@ -25,17 +25,33 @@ pip install -r requirements.txt
 cp .env.template .env
 ```
 
-Edit `.env` with your OpenRouter credentials and local paths:
+Edit `.env` with your model provider and local paths. For OpenRouter:
 
 ```env
-OPENROUTER_API_KEY=your_key
-OPENROUTER_MODEL=openai/gpt-4o-mini
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+LLM_PROVIDER=openrouter
+LLM_API_KEY=your_key
+LLM_MODEL=google/gemma-4-31b-it
 
 EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
 DATA_DIR=data/raw
 STORAGE_DIR=storage
 ```
+
+For a local Ollama instance:
+
+```env
+LLM_PROVIDER=ollama
+LLM_MODEL=gemma4
+
+EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+DATA_DIR=data/raw
+STORAGE_DIR=storage
+```
+
+`LLM_BASE_URL` is optional. It defaults to the standard endpoint for the
+selected provider, or you can set it to target a compatible custom endpoint.
+Ollama must be running and have the configured model installed before queries
+can generate answers.
 
 Create `DATA_DIR` and add `.txt` or `.md` files before ingesting.
 
@@ -72,7 +88,7 @@ Ingest a subfolder under `DATA_DIR`:
 ```bash
 curl -X POST http://127.0.0.1:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"source_path": "docs"}'
+  -d '{"source_path": "test"}'
 ```
 
 Force a full rebuild:
@@ -111,7 +127,7 @@ Response shape:
 }
 ```
 
-## Test
+## Testing
 
 ```bash
 pip install -r requirements-dev.txt

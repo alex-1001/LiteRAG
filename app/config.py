@@ -1,9 +1,27 @@
 """Configuration for app"""
 
-from typing import Optional
+from enum import StrEnum
+from typing import Annotated, Optional
 
-from pydantic import Field
+from pydantic import (
+    AnyHttpUrl,
+    Field,
+    SecretStr,
+    StringConstraints,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class LLMProvider(StrEnum):
+    OPENROUTER = "openrouter"
+    OLLAMA = "ollama"
+
+
+ModelName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+]
 
 
 class Settings(BaseSettings):
@@ -35,10 +53,40 @@ class Settings(BaseSettings):
     # Retrieval (query)
     top_k: int = Field(default=5, ge=1, description="Default number of chunks to retrieve per query.")
 
-    # OpenRouter / LLM (kept it optional so scripts/tests can load config without them; app validates in lifespan)
-    openrouter_base_url: Optional[str] = Field(default=None, description="OpenRouter API base URL.")
-    openrouter_api_key: Optional[str] = Field(default=None, description="OpenRouter API key.")
-    openrouter_model: Optional[str] = Field(default=None, description="Model name for chat completions.")
+    # LLM generation. Provider defaults are resolved when the chat model is built.
+    llm_provider: LLMProvider = Field(
+        ...,
+        description="LLM provider used for answer generation.",
+    )
+    llm_model: ModelName = Field(
+        ...,
+        description="Provider-specific model identifier.",
+    )
+    llm_base_url: Optional[AnyHttpUrl] = Field(
+        default=None,
+        description=(
+            "Optional provider API base URL override. "
+            "Uses the selected provider's default when omitted."
+        ),
+    )
+    llm_api_key: Optional[SecretStr] = Field(
+        default=None,
+        description="Provider API key. Required for OpenRouter but not local Ollama.",
+    )
+
+    @model_validator(mode="after")
+    def validate_llm_configuration(self) -> "Settings":
+        """Validate provider-specific configuration requirements."""
+        if self.llm_provider is LLMProvider.OPENROUTER:
+            if (
+                self.llm_api_key is None
+                or not self.llm_api_key.get_secret_value().strip()
+            ):
+                raise ValueError(
+                    "LLM_API_KEY is required when LLM_PROVIDER=openrouter"
+                )
+
+        return self
 
 
 def load_settings() -> Settings:

@@ -5,7 +5,7 @@ hnswlib>=0.8,<1.0
 numpy>=1.26,<3.0
 python-dotenv>=1.0,<2.0
 
-# LLM API client (OpenRouter uses OpenAI-compatible API)
+# OpenAI-compatible client used by both OpenRouter and Ollama
 openai>=2.0,<3.0
 
 # Embedding models (local)

@@ -1,8 +1,19 @@
 import pytest
 from pathlib import Path
-from app.main import app, lifespan, get_client, get_config, get_embedder, get_vectorstore, get_lock, get_tokenizer
+from app.main import (
+    app,
+    get_chat_model,
+    get_config,
+    get_embedder,
+    get_lock,
+    get_tokenizer,
+    get_vectorstore,
+    lifespan,
+)
 from app.config import Settings
 from app.ingest import resolve_ingest_path
+from app.llm import ModelProviderError
+from app.rag import InvalidModelResponse
 from app.vectorstore import AddChunksResult, ChunkConflictError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -81,9 +92,10 @@ class TestIngest:
     def ingest_app_context(self, main_app_overrides):
         settings = Settings(
             embed_model_name="test-embed",
-            openrouter_base_url="https://example.com",
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
+            llm_provider="openrouter",
+            llm_base_url="https://example.com/v1",
+            llm_api_key="test-key",
+            llm_model="test-llm",
             data_dir="/default/data",
             chunk_size=100,
             chunk_overlap=10,
@@ -349,9 +361,10 @@ class TestQuery:
     def query_app_context(self, main_app_overrides):
         settings = Settings(
             embed_model_name="test-embed",
-            openrouter_base_url="https://example.com",
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
+            llm_provider="openrouter",
+            llm_base_url="https://example.com/v1",
+            llm_api_key="test-key",
+            llm_model="test-llm",
             data_dir="/default/data",
             top_k=5,
         )
@@ -359,7 +372,7 @@ class TestQuery:
         mocks = SimpleNamespace(
             settings=settings,
             embedder=Mock(),
-            client=Mock(),
+            chat_model=Mock(),
             vectorstore=Mock(),
             lock=Lock(),
             test_app=TestClient(app),
@@ -367,7 +380,7 @@ class TestQuery:
         
         main_app_overrides[get_config] = lambda: mocks.settings
         main_app_overrides[get_embedder] = lambda: mocks.embedder
-        main_app_overrides[get_client] = lambda: mocks.client
+        main_app_overrides[get_chat_model] = lambda: mocks.chat_model
         main_app_overrides[get_vectorstore] = lambda: mocks.vectorstore
         main_app_overrides[get_lock] = lambda: mocks.lock
         
@@ -423,7 +436,7 @@ class TestQuery:
         assert response.status_code == 200
         assert not query_mocks.lock.locked()
 
-    def test_query_calls_answer_query_with_client_and_model(self, query_app_context):
+    def test_query_calls_answer_query_with_chat_model(self, query_app_context):
         query_mocks = query_app_context
         chunks = [_make_chunk("retrieved text")]
 
@@ -437,8 +450,7 @@ class TestQuery:
         mock_answer.assert_called_once_with(
             "What is this?",
             chunks,
-            client=query_mocks.client,
-            llm_model="test-llm",
+            chat_model=query_mocks.chat_model,
         )
         
     def test_query_cites_correct_chunks(self, query_app_context):
@@ -519,13 +531,18 @@ class TestQuery:
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to retrieve relevant documents"
 
-    @pytest.mark.parametrize("llm_error", [ValueError("invalid json"), TypeError("bad citations")])
-    def test_query_returns_502_when_llm_response_is_invalid(self, query_app_context, llm_error):
+    def test_query_returns_502_when_llm_response_is_invalid(
+        self,
+        query_app_context,
+    ):
         query_mocks = query_app_context
 
         with (
             patch("app.main.retrieve_chunks") as mock_retrieve,
-            patch("app.main.answer_query", side_effect=llm_error),
+            patch(
+                "app.main.answer_query",
+                side_effect=InvalidModelResponse("invalid RAG response"),
+            ),
         ):
             mock_retrieve.return_value = ([_make_chunk("retrieved text")], [0.25])
 
@@ -533,6 +550,36 @@ class TestQuery:
 
         assert response.status_code == 502
         assert response.json()["detail"] == "LLM returned an invalid response"
+
+    def test_query_returns_502_when_model_provider_request_fails(
+        self,
+        query_app_context,
+    ):
+        query_mocks = query_app_context
+
+        with (
+            patch("app.main.retrieve_chunks") as mock_retrieve,
+            patch(
+                "app.main.answer_query",
+                side_effect=ModelProviderError("provider unavailable"),
+            ),
+            patch("app.main.logging.exception") as mock_log_exception,
+        ):
+            mock_retrieve.return_value = (
+                [_make_chunk("retrieved text")],
+                [0.25],
+            )
+
+            response = query_mocks.test_app.post(
+                "/query",
+                json={"question": "What is this?"},
+            )
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "Failed to generate answer"
+        mock_log_exception.assert_called_once_with(
+            "Model provider request failed"
+        )
 
     def test_query_returns_502_when_answer_generation_fails_unexpectedly(self, query_app_context):
         query_mocks = query_app_context
@@ -556,26 +603,11 @@ class TestLifespan:
             tokenizer_name="test-tokenizer",
             storage_dir="/tmp/vectorstore",
             data_dir="/default/data",
-            openrouter_base_url="https://example.com",
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
+            llm_provider="openrouter",
+            llm_base_url="https://example.com/v1",
+            llm_api_key="test-key",
+            llm_model="test-llm",
         )
-
-    @pytest.mark.anyio
-    async def test_lifespan_requires_openrouter_settings(self):
-        settings = Settings(
-            embed_model_name="test-embed",
-            data_dir="/default/data",
-            openrouter_base_url=None,
-            openrouter_api_key="test-key",
-            openrouter_model="test-llm",
-        )
-        test_app = FastAPI()
-
-        with patch("app.main.load_settings", return_value=settings):
-            with pytest.raises(ValueError, match="OPENROUTER_BASE_URL"):
-                async with lifespan(test_app):
-                    pass
 
     @pytest.mark.anyio
     async def test_lifespan_wires_startup_dependencies(self, lifespan_settings):
@@ -584,21 +616,24 @@ class TestLifespan:
         fake_embedder.dim = 384
         fake_tokenizer = Mock()
         fake_vectorstore = Mock()
-        fake_client = Mock()
+        fake_chat_model = Mock()
 
         with (
             patch("app.main.load_settings", return_value=lifespan_settings),
             patch("app.main.Embedder", return_value=fake_embedder) as mock_embedder_cls,
             patch("app.main.AutoTokenizer.from_pretrained", return_value=fake_tokenizer) as mock_tokenizer_loader,
             patch("app.main.VectorStore", return_value=fake_vectorstore) as mock_vectorstore_cls,
-            patch("app.main.OpenAI", return_value=fake_client) as mock_openai_cls,
+            patch(
+                "app.main.build_chat_model",
+                return_value=fake_chat_model,
+            ) as mock_build_chat_model,
         ):
             async with lifespan(test_app):
                 assert test_app.state.config is lifespan_settings
                 assert test_app.state.embedder is fake_embedder
                 assert test_app.state.tokenizer is fake_tokenizer
                 assert test_app.state.vectorstore is fake_vectorstore
-                assert test_app.state.client is fake_client
+                assert test_app.state.chat_model is fake_chat_model
                 assert test_app.state.lock is not None
 
         mock_embedder_cls.assert_called_once_with("test-embed")
@@ -609,10 +644,7 @@ class TestLifespan:
             embed_model_name="test-embed",
         )
         fake_vectorstore.load_or_create.assert_called_once()
-        mock_openai_cls.assert_called_once_with(
-            api_key="test-key",
-            base_url="https://example.com",
-        )
+        mock_build_chat_model.assert_called_once_with(lifespan_settings)
         fake_vectorstore.save.assert_called_once()
 
     @pytest.mark.anyio
@@ -627,7 +659,7 @@ class TestLifespan:
             patch("app.main.Embedder", return_value=fake_embedder),
             patch("app.main.AutoTokenizer.from_pretrained") as mock_tokenizer_loader,
             patch("app.main.VectorStore", return_value=Mock()),
-            patch("app.main.OpenAI", return_value=Mock()),
+            patch("app.main.build_chat_model", return_value=Mock()),
         ):
             async with lifespan(test_app):
                 pass
@@ -647,7 +679,7 @@ class TestLifespan:
             patch("app.main.Embedder", return_value=fake_embedder),
             patch("app.main.AutoTokenizer.from_pretrained", return_value=Mock()),
             patch("app.main.VectorStore", return_value=fake_vectorstore),
-            patch("app.main.OpenAI", return_value=Mock()),
+            patch("app.main.build_chat_model", return_value=Mock()),
             patch("app.main.logging.exception") as mock_log_exception,
         ):
             async with lifespan(test_app):
