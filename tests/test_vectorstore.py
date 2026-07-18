@@ -486,6 +486,23 @@ class TestVectorStoreSaveLoad:
         assert ids_after == ids_before
         assert dists_after == dists_before
 
+    def test_load_allows_idempotent_add_of_new_chunks(self, vectorstore_path: Path):
+        vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        vs.create()
+        vectors, chunks = create_ordered_test_vectors(num_vectors=5, dim=5)
+        vs.add_idempotent(vectors=vectors[:3], chunks=chunks[:3])
+        vs.save()
+
+        loaded = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
+        loaded.load()
+        result = loaded.add_idempotent(vectors=vectors, chunks=chunks)
+
+        assert result.vector_ids == [3, 4]
+        assert result.chunks_added == 2
+        assert result.chunks_skipped == 3
+        assert result.skipped_chunk_ids == [chunk.chunk_id for chunk in chunks[:3]]
+        assert len(loaded) == 5
+
     def test_load_raises_when_index_file_missing(self, vectorstore_path: Path):
         vs = VectorStore(dim=5, storage_dir=vectorstore_path, initial_max_elements=100)
         vs.create()
