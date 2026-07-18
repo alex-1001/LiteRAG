@@ -2,7 +2,7 @@
 
 Lightweight FastAPI service for indexing local `.txt` and `.md` documents, retrieving relevant chunks from a vector store, and answering questions with cited sources.
 
-The source code is intentionally tight for now, covering the core pieces of a RAG backend: document ingestion, chunking, embeddings, vector search, prompt construction, structured LLM responses, and API error handling.
+The source code is intentionally tight for now, covering the core components of a RAG backend: document ingestion, chunking, embeddings, vector search, prompt construction, structured LLM responses, and API error handling.
 
 ## Features
 
@@ -30,7 +30,7 @@ Edit `.env` with your model provider and local paths. For OpenRouter:
 ```env
 LLM_PROVIDER=openrouter
 LLM_API_KEY=your_key
-LLM_MODEL=openai/gpt-4o-mini
+LLM_MODEL=google/gemma-4-31b-it
 
 EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
 DATA_DIR=data/raw
@@ -41,7 +41,7 @@ For a local Ollama instance:
 
 ```env
 LLM_PROVIDER=ollama
-LLM_MODEL=your-installed-ollama-model
+LLM_MODEL=gemma4
 
 EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
 DATA_DIR=data/raw
@@ -88,7 +88,7 @@ Ingest a subfolder under `DATA_DIR`:
 ```bash
 curl -X POST http://127.0.0.1:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"source_path": "docs"}'
+  -d '{"source_path": "test"}'
 ```
 
 Force a full rebuild:
@@ -127,7 +127,7 @@ Response shape:
 }
 ```
 
-## Test
+## Testing
 
 ```bash
 pip install -r requirements-dev.txt
