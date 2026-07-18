@@ -12,6 +12,7 @@ from app.main import (
 )
 from app.config import Settings
 from app.ingest import resolve_ingest_path
+from app.llm import ModelProviderError
 from app.rag import InvalidModelResponse
 from app.vectorstore import AddChunksResult, ChunkConflictError
 from fastapi import FastAPI
@@ -549,6 +550,36 @@ class TestQuery:
 
         assert response.status_code == 502
         assert response.json()["detail"] == "LLM returned an invalid response"
+
+    def test_query_returns_502_when_model_provider_request_fails(
+        self,
+        query_app_context,
+    ):
+        query_mocks = query_app_context
+
+        with (
+            patch("app.main.retrieve_chunks") as mock_retrieve,
+            patch(
+                "app.main.answer_query",
+                side_effect=ModelProviderError("provider unavailable"),
+            ),
+            patch("app.main.logging.exception") as mock_log_exception,
+        ):
+            mock_retrieve.return_value = (
+                [_make_chunk("retrieved text")],
+                [0.25],
+            )
+
+            response = query_mocks.test_app.post(
+                "/query",
+                json={"question": "What is this?"},
+            )
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "Failed to generate answer"
+        mock_log_exception.assert_called_once_with(
+            "Model provider request failed"
+        )
 
     def test_query_returns_502_when_answer_generation_fails_unexpectedly(self, query_app_context):
         query_mocks = query_app_context

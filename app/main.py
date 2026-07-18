@@ -11,7 +11,7 @@ from app.vectorstore import VectorStore, ChunkConflictError
 from app.ingest import ingest_folder, resolve_ingest_path
 from app.retrieve import retrieve_chunks
 from app.rag import InvalidModelResponse, answer_query
-from app.llm import ChatModel, build_chat_model
+from app.llm import ModelProviderError, ChatModel, build_chat_model
 from contextlib import asynccontextmanager
 from threading import Lock
 import logging
@@ -204,10 +204,16 @@ def query(
             chat_model=chat_model,
         )
     except InvalidModelResponse as e:
-        logging.exception("LLM returned an invalid response")
+        logging.exception("LLM returned an invalid RAG response")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="LLM returned an invalid response",
+        ) from e
+    except ModelProviderError as e:
+        logging.exception("Model provider request failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to generate answer",
         ) from e
     except Exception as e:
         logging.exception("Unexpected query failure")
