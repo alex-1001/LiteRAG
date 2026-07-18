@@ -99,14 +99,14 @@ curl -X POST http://127.0.0.1:8000/ingest \
   -d '{"force_rebuild": true}'
 ```
 
-Document IDs are derived from case-sensitive paths relative to `DATA_DIR`.
+Re-ingesting unchanged documents skips existing chunks. Use `force_rebuild=true` after editing or deleting documents. A rebuild clears the existing index. 
 
 ### Query
 
 ```bash
 curl -X POST http://127.0.0.1:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "What do these documents say about onboarding?", "top_k": 5}'
+  -d '{"question": "According to the documents, much does it cost to raise a colony of bees and how much honey does one yield?", "top_k": 5}'
 ```
 
 Response shape:
