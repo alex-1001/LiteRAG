@@ -269,3 +269,17 @@ class TestBuildChatModel:
 
         with pytest.raises(ValueError, match="OpenRouter API key is missing"):
             build_chat_model(invalid_settings)
+
+    def test_strips_surrounding_whitespace_from_openrouter_api_key(self):
+        settings = _factory_settings(
+            llm_provider="openrouter",
+            llm_api_key="  openrouter-secret  ",
+        )
+
+        with patch("app.llm.OpenAI") as mock_openai:
+            build_chat_model(settings)
+
+        mock_openai.assert_called_once_with(
+            base_url=OPENROUTER_DEFAULT_BASE_URL,
+            api_key="openrouter-secret",
+        )

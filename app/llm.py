@@ -102,7 +102,7 @@ def build_chat_model(settings: Settings) -> ChatModel:
         if settings.llm_api_key is None:
             raise ValueError("OpenRouter API key is missing")
 
-        api_key = settings.llm_api_key.get_secret_value()
+        api_key = settings.llm_api_key.get_secret_value().strip()
 
     elif settings.llm_provider is LLMProvider.OLLAMA:
         base_url = (
