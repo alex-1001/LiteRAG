@@ -112,7 +112,10 @@ class VectorStore:
         # load index
         try:
             loaded_index = Index(space=index_metadata["space"], dim=index_metadata["dim"])
-            loaded_index.load_index(index_path.as_posix())
+            loaded_index.load_index(
+                index_path.as_posix(),
+                allow_replace_deleted=self.hsnw_params["allow_replace_deleted"],
+            )
         except Exception as e:
             # Catch all exceptions when loading index
             raise RuntimeError(f"Failed to load vector index from {index_path}: {e}") from e
